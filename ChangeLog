@@ -1,4 +1,47 @@
-2012.07.25, Version 0.8.4 (Stable)
+2012.08.02, Version 0.8.5 (Stable)
+
+* node: tag Encode and friends NODE_EXTERN (Ben Noordhuis)
+
+* fs: fix ReadStream / WriteStream missing callback (Gil Pedersen)
+
+* fs: fix readFileSync("/proc/cpuinfo") regression (Ben Noordhuis)
+
+* installer: don't assume bash is installed (Ben Noordhuis)
+
+* deps, tools: remove stray reject files (Ben Noordhuis)
+
+* Report errors properly from --eval and stdin (isaacs)
+
+* assert: fix throws() throws an error without message property (koichik)
+
+* cluster: fix libuv assert in net.listen() (Ben Noordhuis)
+
+* build: always link sunos builds with libumem (Trent Mick)
+
+* build: improve armv7 / hard-float detection (Adam Malcontenti-Wilson)
+
+* https: Use host header as effective servername (isaacs)
+
+* sunos: workaround OS bug to prevent fs.watch() from spinning (Bryan Cantrill)
+
+* include: move ssize_t workaround to uv-win.h (Ben Noordhuis)
+
+* linux: fix 'two watchers, one path' segfault (Ben Noordhuis)
+
+* unix: don't abort() when trylock functions return EBUSY (Shuhei Tanuma)
+
+* windows: invalid stdio handles should be INVALID_HANDLE_VALUE and not NULL (Bert Belder)
+* windows: only allow opening directories for reading (Bert Belder)
+* windows: initialize uv_fs_t.path to NULL (Bert Belder)
+* windows/uv_spawn: ignore errors when duplicating fd 0-2 fails (Bert Belder)
+* windows: fix the MinGW build (Bert Belder)
+* windows: improve uv_fs_unlink (Bert Belder)
+* windows: fix regression in uv_fs_link (Bert Belder)
+* windows: fix memory leaks in fs (Bert Belder)
+* Avoid compiler warning (Bert Belder)
+
+
+2012.07.25, Version 0.8.4 (Stable), f98562fcd7d1cab573ca4dc1612157d6999befd4
 
 * V8: Upgrade to 3.11.10.17
 
