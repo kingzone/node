@@ -8,8 +8,6 @@
 
 * installer: don't assume bash is installed (Ben Noordhuis)
 
-* deps, tools: remove stray reject files (Ben Noordhuis)
-
 * Report errors properly from --eval and stdin (isaacs)
 
 * assert: fix throws() throws an error without message property (koichik)
@@ -23,8 +21,6 @@
 * https: Use host header as effective servername (isaacs)
 
 * sunos: workaround OS bug to prevent fs.watch() from spinning (Bryan Cantrill)
-
-* include: move ssize_t workaround to uv-win.h (Ben Noordhuis)
 
 * linux: fix 'two watchers, one path' segfault (Ben Noordhuis)
 
