@@ -1,4 +1,5 @@
 *.swp
+.*.swp
 npm-debug.log
 /test/bin
 /test/output.log
@@ -6,9 +7,11 @@ npm-debug.log
 /test/packages/npm-test-depends-on-spark/which-spark.log
 /test/packages/test-package/random-data.txt
 /test/root
+node_modules/marked
 node_modules/ronn
 node_modules/tap
 node_modules/.bin
+node_modules/npm-registry-mock
 /npmrc
 /release/
 
@@ -20,3 +23,7 @@ html/*.png
 !.npmignore
 
 /npm-*.tgz
+
+*.pyc
+
+/test/tap/builtin-config

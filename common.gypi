@@ -1,22 +1,36 @@
 {
   'variables': {
-    'visibility%': 'hidden',         # V8's visibility setting
-    'target_arch%': 'ia32',          # set v8's target architecture
-    'host_arch%': 'ia32',            # set v8's host architecture
-    'want_separate_host_toolset': 0, # V8 should not build target and host
-    'library%': 'static_library',    # allow override to 'shared_library' for DLL/.so builds
-    'component%': 'static_library',  # NB. these names match with what V8 expects
-    'msvs_multi_core_compile': '0',  # we do enable multicore compiles, but not using the V8 way
+    'werror': '',                     # Turn off -Werror in V8 build.
+    'visibility%': 'hidden',          # V8's visibility setting
+    'target_arch%': 'ia32',           # set v8's target architecture
+    'host_arch%': 'ia32',             # set v8's host architecture
+    'want_separate_host_toolset%': 0, # V8 should not build target and host
+    'library%': 'static_library',     # allow override to 'shared_library' for DLL/.so builds
+    'component%': 'static_library',   # NB. these names match with what V8 expects
+    'msvs_multi_core_compile': '0',   # we do enable multicore compiles, but not using the V8 way
+    'gcc_version%': 'unknown',
+    'clang%': 0,
+    'python%': 'python',
 
-    # Turn on optimizations that may trigger compiler bugs.
-    # Use at your own risk. Do *NOT* report bugs if this option is enabled.
-    'node_unsafe_optimizations%': 0,
+    # Enable disassembler for `--print-code` v8 options
+    'v8_enable_disassembler': 1,
 
     # Enable V8's post-mortem debugging only on unix flavors.
     'conditions': [
-      ['OS != "win"', {
+      ['OS == "win"', {
+        'os_posix': 0,
+        'v8_postmortem_support': 'false'
+      }, {
+        'os_posix': 1,
         'v8_postmortem_support': 'true'
-      }]
+      }],
+      ['GENERATOR == "ninja" or OS== "mac"', {
+        'OBJ_DIR': '<(PRODUCT_DIR)/obj',
+        'V8_BASE': '<(PRODUCT_DIR)/libv8_base.a',
+      }, {
+        'OBJ_DIR': '<(PRODUCT_DIR)/obj.target',
+        'V8_BASE': '<(PRODUCT_DIR)/obj.target/deps/v8/tools/gyp/libv8_base.a',
+      }],
     ],
   },
 
@@ -24,6 +38,9 @@
     'default_configuration': 'Release',
     'configurations': {
       'Debug': {
+        'variables': {
+          'v8_enable_handle_zapping%': 1,
+        },
         'defines': [ 'DEBUG', '_DEBUG' ],
         'cflags': [ '-g', '-O0' ],
         'conditions': [
@@ -43,33 +60,31 @@
             'LinkIncremental': 2, # enable incremental linking
           },
         },
+        'xcode_settings': {
+          'GCC_OPTIMIZATION_LEVEL': '0', # stop gyp from defaulting to -Os
+        },
       },
       'Release': {
+        'variables': {
+          'v8_enable_handle_zapping%': 0,
+        },
+        'cflags': [ '-O3', '-ffunction-sections', '-fdata-sections' ],
         'conditions': [
           ['target_arch=="x64"', {
             'msvs_configuration_platform': 'x64',
           }],
-          ['node_unsafe_optimizations==1', {
-            'cflags': [ '-O3', '-ffunction-sections', '-fdata-sections' ],
-            'ldflags': [ '-Wl,--gc-sections' ],
-          }, {
-            'cflags': [ '-O2', '-fno-strict-aliasing', '-fno-tree-vrp' ],
-            'cflags!': [ '-O3', '-fstrict-aliasing' ],
-            'conditions': [
-              # Required by the dtrace post-processor. Unfortunately,
-              # some gcc/binutils combos generate bad code when
-              # -ffunction-sections is enabled. Let's hope for the best.
-              ['OS=="solaris"', {
-                'cflags': [ '-ffunction-sections', '-fdata-sections' ],
-              }, {
-                'cflags!': [ '-ffunction-sections', '-fdata-sections' ],
-              }],
-            ],
-          }],
           ['OS=="solaris"', {
-            'cflags': [ '-fno-omit-frame-pointer' ],
             # pull in V8's postmortem metadata
             'ldflags': [ '-Wl,-z,allextract' ]
+          }],
+          ['clang == 0 and gcc_version >= 40', {
+            'cflags': [ '-fno-tree-vrp' ],  # Work around compiler bug.
+          }],
+          ['clang == 0 and gcc_version <= 44', {
+            'cflags': [ '-fno-tree-sink' ],  # Work around compiler bug.
+          }],
+          ['OS!="mac" and OS!="win"', {
+            'cflags': [ '-fno-omit-frame-pointer' ],
           }],
         ],
         'msvs_settings': {
@@ -102,6 +117,10 @@
         },
       }
     },
+    # Forcibly disable -Werror.  We support a wide range of compilers, it's
+    # simply not feasible to squelch all warnings, never mind that the
+    # libraries in deps/ are not under our control.
+    'cflags!': ['-Werror'],
     'msvs_settings': {
       'VCCLCompilerTool': {
         'StringPooling': 'true', # pool string literals
@@ -116,8 +135,21 @@
       },
       'VCLinkerTool': {
         'conditions': [
+          ['target_arch=="ia32"', {
+            'TargetMachine' : 1, # /MACHINE:X86
+            'target_conditions': [
+              ['_type=="executable"', {
+                'AdditionalOptions': [ '/SubSystem:Console,"5.01"' ],
+              }],
+            ],
+          }],
           ['target_arch=="x64"', {
-            'TargetMachine' : 17 # /MACHINE:X64
+            'TargetMachine' : 17, # /MACHINE:AMD64
+            'target_conditions': [
+              ['_type=="executable"', {
+                'AdditionalOptions': [ '/SubSystem:Console,"5.02"' ],
+              }],
+            ],
           }],
         ],
         'GenerateDebugInformation': 'true',
@@ -125,13 +157,9 @@
         'DataExecutionPrevention': 2, # enable DEP
         'AllowIsolation': 'true',
         'SuppressStartupBanner': 'true',
-        'target_conditions': [
-          ['_type=="executable"', {
-            'SubSystem': 1, # console executable
-          }],
-        ],
       },
     },
+    'msvs_disabled_warnings': [4351, 4355, 4800],
     'conditions': [
       ['OS == "win"', {
         'msvs_cygwin_shell': 0, # prevent actions from trying to use cygwin
@@ -146,16 +174,20 @@
           'BUILDING_V8_SHARED=1',
           'BUILDING_UV_SHARED=1',
         ],
-      }, {
-        'defines': [
-          '_LARGEFILE_SOURCE',
-          '_FILE_OFFSET_BITS=64',
-        ],
       }],
-      [ 'OS=="linux" or OS=="freebsd" or OS=="openbsd" or OS=="solaris"', {
-        'cflags': [ '-Wall', '-pthread', ],
+      [ 'OS in "linux freebsd openbsd solaris"', {
+        'cflags': [ '-pthread', ],
+        'ldflags': [ '-pthread' ],
+      }],
+      [ 'OS in "linux freebsd openbsd solaris android"', {
+        'cflags': [ '-Wall', '-Wextra', '-Wno-unused-parameter', ],
         'cflags_cc': [ '-fno-rtti', '-fno-exceptions' ],
-        'ldflags': [ '-pthread', '-rdynamic' ],
+        'ldflags': [ '-rdynamic' ],
+        'target_conditions': [
+          ['_type=="static_library"', {
+            'standalone_static_library': 1, # disable thin archive which needs binutils >= 2.19
+          }],
+        ],
         'conditions': [
           [ 'target_arch=="ia32"', {
             'cflags': [ '-m32' ],
@@ -173,6 +205,10 @@
           }],
         ],
       }],
+      [ 'OS=="android"', {
+        'defines': ['_GLIBCXX_USE_C99_MATH'],
+        'libraries': [ '-llog' ],
+      }],
       ['OS=="mac"', {
         'defines': ['_DARWIN_USE_64_BIT_INODE=1'],
         'xcode_settings': {
@@ -184,8 +220,6 @@
           'GCC_ENABLE_CPP_RTTI': 'NO',              # -fno-rtti
           'GCC_ENABLE_PASCAL_STRINGS': 'NO',        # No -mpascal-strings
           'GCC_THREADSAFE_STATICS': 'NO',           # -fno-threadsafe-statics
-          'GCC_VERSION': '4.2',
-          'GCC_WARN_ABOUT_MISSING_NEWLINE': 'YES',  # -Wnewline-eof
           'PREBINDING': 'NO',                       # No -Wl,-prebind
           'MACOSX_DEPLOYMENT_TARGET': '10.5',       # -mmacosx-version-min=10.5
           'USE_HEADERMAP': 'NO',
@@ -213,6 +247,14 @@
           }],
         ],
       }],
+      ['OS=="freebsd" and node_use_dtrace=="true"', {
+        'libraries': [ '-lelf' ],
+      }],
+      ['OS=="freebsd"', {
+        'ldflags': [
+          '-Wl,--export-dynamic',
+        ],
+      }]
     ],
   }
 }

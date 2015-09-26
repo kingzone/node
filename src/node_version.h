@@ -19,13 +19,18 @@
 // OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
 // USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-#ifndef NODE_VERSION_H
-#define NODE_VERSION_H
+#ifndef SRC_NODE_VERSION_H_
+#define SRC_NODE_VERSION_H_
 
 #define NODE_MAJOR_VERSION 0
-#define NODE_MINOR_VERSION 9
-#define NODE_PATCH_VERSION 1
+#define NODE_MINOR_VERSION 13
+#define NODE_PATCH_VERSION 0
+
 #define NODE_VERSION_IS_RELEASE 0
+
+#ifndef NODE_TAG
+# define NODE_TAG ""
+#endif
 
 #ifndef NODE_STRINGIFY
 #define NODE_STRINGIFY(n) NODE_STRINGIFY_HELPER(n)
@@ -35,11 +40,13 @@
 #if NODE_VERSION_IS_RELEASE
 # define NODE_VERSION_STRING  NODE_STRINGIFY(NODE_MAJOR_VERSION) "." \
                               NODE_STRINGIFY(NODE_MINOR_VERSION) "." \
-                              NODE_STRINGIFY(NODE_PATCH_VERSION)
+                              NODE_STRINGIFY(NODE_PATCH_VERSION)     \
+                              NODE_TAG
 #else
 # define NODE_VERSION_STRING  NODE_STRINGIFY(NODE_MAJOR_VERSION) "." \
                               NODE_STRINGIFY(NODE_MINOR_VERSION) "." \
-                              NODE_STRINGIFY(NODE_PATCH_VERSION) "-pre"
+                              NODE_STRINGIFY(NODE_PATCH_VERSION)     \
+                              NODE_TAG "-pre"
 #endif
 
 #define NODE_VERSION "v" NODE_VERSION_STRING
@@ -48,6 +55,15 @@
 #define NODE_VERSION_AT_LEAST(major, minor, patch) \
   (( (major) < NODE_MAJOR_VERSION) \
   || ((major) == NODE_MAJOR_VERSION && (minor) < NODE_MINOR_VERSION) \
-  || ((major) == NODE_MAJOR_VERSION && (minor) == NODE_MINOR_VERSION && (patch) <= NODE_PATCH_VERSION))
+  || ((major) == NODE_MAJOR_VERSION && \
+      (minor) == NODE_MINOR_VERSION && (patch) <= NODE_PATCH_VERSION))
 
-#endif /* NODE_VERSION_H */
+/**
+ * When this version number is changed, node.js will refuse
+ * to load older modules.  This should be done whenever
+ * an API is broken in the C++ side, including in v8 or
+ * other dependencies.
+ */
+#define NODE_MODULE_VERSION 14 /* v0.12 */
+
+#endif  /* SRC_NODE_VERSION_H_ */

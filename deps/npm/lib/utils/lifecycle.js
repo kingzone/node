@@ -1,16 +1,17 @@
-
 exports = module.exports = lifecycle
 exports.cmd = cmd
+exports.makeEnv = makeEnv
 
 var log = require("npmlog")
-  , exec = require("./exec.js")
-  , npm = require("../npm.js")
-  , path = require("path")
-  , fs = require("graceful-fs")
-  , chain = require("slide").chain
-  , constants = require("constants")
-  , Stream = require("stream").Stream
-  , PATH = "PATH"
+var spawn = require("./spawn")
+var npm = require("../npm.js")
+var path = require("path")
+var fs = require("graceful-fs")
+var chain = require("slide").chain
+var Stream = require("stream").Stream
+var PATH = "PATH"
+var uidNumber = require("uid-number")
+var umask = require("./umask")
 
 // windows calls it's path "Path" usually, but this is not guaranteed.
 if (process.platform === "win32") {
@@ -31,7 +32,7 @@ function lifecycle (pkg, stage, wd, unsafe, failOk, cb) {
   if (!pkg) return cb(new Error("Invalid package data"))
 
   log.info(stage, pkg._id)
-  if (!pkg.scripts) pkg.scripts = {}
+  if (!pkg.scripts || npm.config.get('ignore-scripts')) pkg.scripts = {}
 
   validWd(wd || path.resolve(npm.dir, pkg.name), function (er, wd) {
     if (er) return cb(er)
@@ -48,6 +49,8 @@ function lifecycle (pkg, stage, wd, unsafe, failOk, cb) {
     // set the env variables, then run scripts as a child process.
     var env = makeEnv(pkg)
     env.npm_lifecycle_event = stage
+    env.npm_node_execpath = env.NODE = env.NODE || process.execPath
+    env.npm_execpath = require.main.filename
 
     // "nobody" typically doesn't have permission to write to /tmp
     // even if it's never used, sh freaks out.
@@ -68,6 +71,7 @@ function lifecycle_ (pkg, stage, wd, env, unsafe, failOk, cb) {
   var pathArr = []
     , p = wd.split("node_modules")
     , acc = path.resolve(p.shift())
+
   p.forEach(function (pp) {
     pathArr.unshift(path.join(acc, "node_modules", ".bin"))
     acc = path.join(acc, "node_modules", pp)
@@ -86,34 +90,25 @@ function lifecycle_ (pkg, stage, wd, env, unsafe, failOk, cb) {
   if (packageLifecycle) {
     // define this here so it's available to all scripts.
     env.npm_lifecycle_script = pkg.scripts[stage]
-    // if the command is "node-gyp <args>", then call ours instead.
-    try {
-      var ourGyp = require.resolve("node-gyp/bin/node-gyp.js")
-    } catch (er) {
-      return cb(new Error("No gyp installed with npm"))
+  }
+
+  function done (er) {
+    if (er) {
+      if (npm.config.get("force")) {
+        log.info("forced, continuing", er)
+        er = null
+      } else if (failOk) {
+        log.warn("continuing anyway", er.message)
+        er = null
+      }
     }
-    var gyp = path.execPath + " " + JSON.stringify(ourGyp)
-    pkg.scripts[stage] = pkg.scripts[stage].replace(/^node-gyp( |$)/, gyp)
-  }
-
-  if (failOk) {
-    cb = (function (cb_) { return function (er) {
-      if (er) log.warn("continuing anyway", er.message)
-      cb_()
-    }})(cb)
-  }
-
-  if (npm.config.get("force")) {
-    cb = (function (cb_) { return function (er) {
-      if (er) log.info("forced, continuing", er)
-      cb_()
-    }})(cb)
+    cb(er)
   }
 
   chain
     ( [ packageLifecycle && [runPackageLifecycle, pkg, env, wd, unsafe]
       , [runHookLifecycle, pkg, env, wd, unsafe] ]
-    , cb )
+    , done )
 }
 
 function validWd (d, cb) {
@@ -132,37 +127,106 @@ function validWd (d, cb) {
 function runPackageLifecycle (pkg, env, wd, unsafe, cb) {
   // run package lifecycle scripts in the package root, or the nearest parent.
   var stage = env.npm_lifecycle_event
-    , user = unsafe ? null : npm.config.get("user")
-    , group = unsafe ? null : npm.config.get("group")
     , cmd = env.npm_lifecycle_script
-    , sh = "sh"
-    , shFlag = "-c"
-
-  if (process.platform === "win32") {
-    sh = "cmd"
-    shFlag = "/c"
-  }
-
-  log.verbose("unsafe-perm in lifecycle", unsafe)
 
   var note = "\n> " + pkg._id + " " + stage + " " + wd
            + "\n> " + cmd + "\n"
+  runCmd(note, cmd, pkg, env, stage, wd, unsafe, cb)
+}
 
-  console.log(note)
-  exec( sh, [shFlag, cmd], env, true, wd
-      , user, group
-      , function (er, code, stdout, stderr) {
+
+var running = false
+var queue = []
+function dequeue() {
+  running = false
+  if (queue.length) {
+    var r = queue.shift()
+    runCmd.apply(null, r)
+  }
+}
+
+function runCmd (note, cmd, pkg, env, stage, wd, unsafe, cb) {
+  if (running) {
+    queue.push([note, cmd, pkg, env, stage, wd, unsafe, cb])
+    return
+  }
+
+  running = true
+  log.pause()
+  var user = unsafe ? null : npm.config.get("user")
+    , group = unsafe ? null : npm.config.get("group")
+
+  if (log.level !== 'silent') {
+    if (npm.spinner.int) {
+      npm.config.get("logstream").write("\r \r")
+    }
+    console.log(note)
+  }
+  log.verbose("unsafe-perm in lifecycle", unsafe)
+
+  if (process.platform === "win32") {
+    unsafe = true
+  }
+
+  if (unsafe) {
+    runCmd_(cmd, pkg, env, wd, stage, unsafe, 0, 0, cb)
+  } else {
+    uidNumber(user, group, function (er, uid, gid) {
+      runCmd_(cmd, pkg, env, wd, stage, unsafe, uid, gid, cb)
+    })
+  }
+}
+
+function runCmd_ (cmd, pkg, env, wd, stage, unsafe, uid, gid, cb_) {
+
+  function cb (er) {
+    cb_.apply(null, arguments)
+    log.resume()
+    process.nextTick(dequeue)
+  }
+
+  var conf = { cwd: wd
+             , env: env
+             , stdio: [ 0, 1, 2 ]
+             }
+
+  if (!unsafe) {
+    conf.uid = uid ^ 0
+    conf.gid = gid ^ 0
+  }
+
+  var sh = "sh"
+  var shFlag = "-c"
+
+  if (process.platform === "win32") {
+    sh = process.env.comspec || "cmd"
+    shFlag = "/c"
+    conf.windowsVerbatimArguments = true
+  }
+
+  var proc = spawn(sh, [shFlag, cmd], conf)
+  proc.on("error", procError)
+  proc.on("close", function (code, signal) {
+    if (signal) {
+      process.kill(process.pid, signal);
+    } else if (code) {
+      var er = new Error("Exit status " + code)
+    }
+    procError(er)
+  })
+
+  function procError (er) {
     if (er && !npm.ROLLBACK) {
       log.info(pkg._id, "Failed to exec "+stage+" script")
       er.message = pkg._id + " "
-                 + stage + ": `" + env.npm_lifecycle_script+"`\n"
+                 + stage + ": `" + cmd +"`\n"
                  + er.message
       if (er.code !== "EPERM") {
         er.code = "ELIFECYCLE"
       }
       er.pkgid = pkg._id
       er.stage = stage
-      er.script = env.npm_lifecycle_script
+      er.script = cmd
       er.pkgname = pkg.name
       return cb(er)
     } else if (er) {
@@ -171,8 +235,9 @@ function runPackageLifecycle (pkg, env, wd, unsafe, cb) {
       return cb()
     }
     cb(er)
-  })
+  }
 }
+
 
 function runHookLifecycle (pkg, env, wd, unsafe, cb) {
   // check for a hook script, run if present.
@@ -184,17 +249,9 @@ function runHookLifecycle (pkg, env, wd, unsafe, cb) {
 
   fs.stat(hook, function (er) {
     if (er) return cb()
-
-    exec( "sh", ["-c", cmd], env, true, wd
-        , user, group
-        , function (er) {
-      if (er) {
-        er.message += "\nFailed to exec "+stage+" hook script"
-        log.info(pkg._id, er)
-      }
-      if (npm.ROLLBACK) return cb()
-      cb(er)
-    })
+    var note = "\n> " + pkg._id + " " + stage + " " + wd
+             + "\n> " + cmd
+    runCmd(note, hook, pkg, env, stage, wd, unsafe, cb)
   })
 }
 
@@ -221,6 +278,9 @@ function makeEnv (data, prefix, env) {
 
   for (var i in data) if (i.charAt(0) !== "_") {
     var envKey = (prefix+i).replace(/[^a-zA-Z0-9_]/g, '_')
+    if (i === "readme") {
+      continue
+    }
     if (data[i] && typeof(data[i]) === "object") {
       try {
         // quick and dirty detection for cyclical structures
@@ -246,8 +306,7 @@ function makeEnv (data, prefix, env) {
 
   prefix = "npm_config_"
   var pkgConfig = {}
-    , ini = require("./ini.js")
-    , keys = ini.keys
+    , keys = npm.config.keys
     , pkgVerConfig = {}
     , namePref = data.name + ":"
     , verPref = data.name + "@" + data.version + ":"
@@ -256,9 +315,11 @@ function makeEnv (data, prefix, env) {
     if (i.charAt(0) === "_" && i.indexOf("_"+namePref) !== 0) {
       return
     }
-    var value = ini.get(i)
-    if (value instanceof Stream) return
+    var value = npm.config.get(i)
+    if (value instanceof Stream || Array.isArray(value)) return
+    if (i.match(/umask/)) value = umask.toString(value)
     if (!value) value = ""
+    else if (typeof value === "number") value = "" + value
     else if (typeof value !== "string") value = JSON.stringify(value)
 
     value = -1 !== value.indexOf("\n")
@@ -289,13 +350,9 @@ function makeEnv (data, prefix, env) {
 
 function cmd (stage) {
   function CMD (args, cb) {
-    if (args.length) {
-      chain(args.map(function (p) {
-        return [npm.commands, "run-script", [p, stage]]
-      }), cb)
-    } else npm.commands["run-script"]([stage], cb)
+    npm.commands["run-script"]([stage].concat(args), cb)
   }
-  CMD.usage = "npm "+stage+" <name>"
+  CMD.usage = "npm "+stage+" [-- <args>]"
   var installedShallow = require("./completion/installed-shallow.js")
   CMD.completion = function (opts, cb) {
     installedShallow(opts, function (d) {

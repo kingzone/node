@@ -24,6 +24,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <signal.h>
+#include <limits.h>
+#include <wchar.h>
+#include <malloc.h>    /* alloca */
 
 #include "uv.h"
 #include "internal.h"
@@ -35,27 +38,104 @@
 
 
 typedef struct env_var {
-  const char* narrow;
-  const wchar_t* wide;
-  int len; /* including null or '=' */
-  int supplied;
-  int value_len;
+  const WCHAR* const wide;
+  const WCHAR* const wide_eq;
+  const size_t len; /* including null or '=' */
 } env_var_t;
 
-#define E_V(str) { str "=", L##str, sizeof(str), 0, 0 }
+#define E_V(str) { L##str, L##str L"=", sizeof(str) }
+
+static const env_var_t required_vars[] = { /* keep me sorted */
+  E_V("HOMEDRIVE"),
+  E_V("HOMEPATH"),
+  E_V("LOGONSERVER"),
+  E_V("PATH"),
+  E_V("SYSTEMDRIVE"),
+  E_V("SYSTEMROOT"),
+  E_V("TEMP"),
+  E_V("USERDOMAIN"),
+  E_V("USERNAME"),
+  E_V("USERPROFILE"),
+  E_V("WINDIR"),
+};
+static size_t n_required_vars = ARRAY_SIZE(required_vars);
 
 
-#define UTF8_TO_UTF16(s, t)                               \
-  size = uv_utf8_to_utf16(s, NULL, 0) * sizeof(wchar_t);  \
-  t = (wchar_t*)malloc(size);                             \
-  if (!t) {                                               \
-    uv_fatal_error(ERROR_OUTOFMEMORY, "malloc");          \
-  }                                                       \
-  if (!uv_utf8_to_utf16(s, t, size / sizeof(wchar_t))) {  \
-    uv__set_sys_error(loop, GetLastError());              \
-    err = -1;                                             \
-    goto done;                                            \
+static HANDLE uv_global_job_handle_;
+static uv_once_t uv_global_job_handle_init_guard_ = UV_ONCE_INIT;
+
+
+static void uv__init_global_job_handle(void) {
+  /* Create a job object and set it up to kill all contained processes when
+   * it's closed. Since this handle is made non-inheritable and we're not
+   * giving it to anyone, we're the only process holding a reference to it.
+   * That means that if this process exits it is closed and all the processes
+   * it contains are killed. All processes created with uv_spawn that are not
+   * spawned with the UV_PROCESS_DETACHED flag are assigned to this job.
+   *
+   * We're setting the JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK flag so only the
+   * processes that we explicitly add are affected, and *their* subprocesses
+   * are not. This ensures that our child processes are not limited in their
+   * ability to use job control on Windows versions that don't deal with
+   * nested jobs (prior to Windows 8 / Server 2012). It also lets our child
+   * processes created detached processes without explicitly breaking away
+   * from job control (which uv_spawn doesn't, either).
+   */
+  SECURITY_ATTRIBUTES attr;
+  JOBOBJECT_EXTENDED_LIMIT_INFORMATION info;
+
+  memset(&attr, 0, sizeof attr);
+  attr.bInheritHandle = FALSE;
+
+  memset(&info, 0, sizeof info);
+  info.BasicLimitInformation.LimitFlags =
+      JOB_OBJECT_LIMIT_BREAKAWAY_OK |
+      JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK |
+      JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION |
+      JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+
+  uv_global_job_handle_ = CreateJobObjectW(&attr, NULL);
+  if (uv_global_job_handle_ == NULL)
+    uv_fatal_error(GetLastError(), "CreateJobObjectW");
+
+  if (!SetInformationJobObject(uv_global_job_handle_,
+                               JobObjectExtendedLimitInformation,
+                               &info,
+                               sizeof info))
+    uv_fatal_error(GetLastError(), "SetInformationJobObject");
+}
+
+
+static int uv_utf8_to_utf16_alloc(const char* s, WCHAR** ws_ptr) {
+  int ws_len, r;
+  WCHAR* ws;
+
+  ws_len = MultiByteToWideChar(CP_UTF8,
+                               0,
+                               s,
+                               -1,
+                               NULL,
+                               0);
+  if (ws_len <= 0) {
+    return GetLastError();
   }
+
+  ws = (WCHAR*) uv__malloc(ws_len * sizeof(WCHAR));
+  if (ws == NULL) {
+    return ERROR_OUTOFMEMORY;
+  }
+
+  r = MultiByteToWideChar(CP_UTF8,
+                          0,
+                          s,
+                          -1,
+                          ws,
+                          ws_len);
+  assert(r == ws_len);
+
+  *ws_ptr = ws;
+  return 0;
+}
 
 
 static void uv_process_init(uv_loop_t* loop, uv_process_t* handle) {
@@ -65,18 +145,12 @@ static void uv_process_init(uv_loop_t* loop, uv_process_t* handle) {
   handle->exit_signal = 0;
   handle->wait_handle = INVALID_HANDLE_VALUE;
   handle->process_handle = INVALID_HANDLE_VALUE;
-  handle->close_handle = INVALID_HANDLE_VALUE;
   handle->child_stdio_buffer = NULL;
+  handle->exit_cb_pending = 0;
 
   uv_req_init(loop, (uv_req_t*)&handle->exit_req);
   handle->exit_req.type = UV_PROCESS_EXIT;
   handle->exit_req.data = handle;
-  uv_req_init(loop, (uv_req_t*)&handle->close_req);
-  handle->close_req.type = UV_PROCESS_CLOSE;
-  handle->close_req.data = handle;
-
-  loop->counters.handle_init++;
-  loop->counters.process_init++;
 }
 
 
@@ -87,18 +161,20 @@ static void uv_process_init(uv_loop_t* loop, uv_process_t* handle) {
 /*
  * Helper function for search_path
  */
-static wchar_t* search_path_join_test(const wchar_t* dir,
-                                      int dir_len,
-                                      const wchar_t* name,
-                                      int name_len,
-                                      const wchar_t* ext,
-                                      int ext_len,
-                                      const wchar_t* cwd,
-                                      int cwd_len) {
-  wchar_t *result, *result_pos;
+static WCHAR* search_path_join_test(const WCHAR* dir,
+                                    size_t dir_len,
+                                    const WCHAR* name,
+                                    size_t name_len,
+                                    const WCHAR* ext,
+                                    size_t ext_len,
+                                    const WCHAR* cwd,
+                                    size_t cwd_len) {
+  WCHAR *result, *result_pos;
   DWORD attrs;
-
-  if (dir_len >= 1 && (dir[0] == L'/' || dir[0] == L'\\')) {
+  if (dir_len > 2 && dir[0] == L'\\' && dir[1] == L'\\') {
+    /* It's a UNC path so ignore cwd */
+    cwd_len = 0;
+  } else if (dir_len >= 1 && (dir[0] == L'/' || dir[0] == L'\\')) {
     /* It's a full path without drive letter, use cwd's drive letter only */
     cwd_len = 2;
   } else if (dir_len >= 2 && dir[1] == L':' &&
@@ -121,7 +197,7 @@ static wchar_t* search_path_join_test(const wchar_t* dir,
   }
 
   /* Allocate buffer for output */
-  result = result_pos = (wchar_t*)malloc(sizeof(wchar_t) *
+  result = result_pos = (WCHAR*)uv__malloc(sizeof(WCHAR) *
       (cwd_len + 1 + dir_len + 1 + name_len + 1 + ext_len + 1));
 
   /* Copy cwd */
@@ -166,11 +242,11 @@ static wchar_t* search_path_join_test(const wchar_t* dir,
   attrs = GetFileAttributesW(result);
 
   if (attrs != INVALID_FILE_ATTRIBUTES &&
-     !(attrs & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT))) {
+      !(attrs & FILE_ATTRIBUTE_DIRECTORY)) {
     return result;
   }
 
-  free(result);
+  uv__free(result);
   return NULL;
 }
 
@@ -178,14 +254,14 @@ static wchar_t* search_path_join_test(const wchar_t* dir,
 /*
  * Helper function for search_path
  */
-static wchar_t* path_search_walk_ext(const wchar_t *dir,
-                                     int dir_len,
-                                     const wchar_t *name,
-                                     int name_len,
-                                     wchar_t *cwd,
-                                     int cwd_len,
-                                     int name_has_ext) {
-  wchar_t* result;
+static WCHAR* path_search_walk_ext(const WCHAR *dir,
+                                   size_t dir_len,
+                                   const WCHAR *name,
+                                   size_t name_len,
+                                   WCHAR *cwd,
+                                   size_t cwd_len,
+                                   int name_has_ext) {
+  WCHAR* result;
 
   /* If the name itself has a nonempty extension, try this extension first */
   if (name_has_ext) {
@@ -257,21 +333,25 @@ static wchar_t* path_search_walk_ext(const wchar_t *dir,
  *   file that is not readable/executable; if the spawn fails it will not
  *   continue searching.
  *
- * TODO: correctly interpret UNC paths
+ * UNC path support: we are dealing with UNC paths in both the path and the
+ * filename. This is a deviation from what cmd.exe does (it does not let you
+ * start a program by specifying an UNC path on the command line) but this is
+ * really a pointless restriction.
+ *
  */
-static wchar_t* search_path(const wchar_t *file,
-                            wchar_t *cwd,
-                            const wchar_t *path) {
+static WCHAR* search_path(const WCHAR *file,
+                            WCHAR *cwd,
+                            const WCHAR *path) {
   int file_has_dir;
-  wchar_t* result = NULL;
-  wchar_t *file_name_start;
-  wchar_t *dot;
-  const wchar_t *dir_start, *dir_end, *dir_path;
-  int dir_len;
+  WCHAR* result = NULL;
+  WCHAR *file_name_start;
+  WCHAR *dot;
+  const WCHAR *dir_start, *dir_end, *dir_path;
+  size_t dir_len;
   int name_has_ext;
 
-  int file_len = wcslen(file);
-  int cwd_len = wcslen(cwd);
+  size_t file_len = wcslen(file);
+  size_t cwd_len = wcslen(cwd);
 
   /* If the caller supplies an empty filename,
    * we're not gonna return c:\windows\.exe -- GFY!
@@ -283,7 +363,7 @@ static wchar_t* search_path(const wchar_t *file,
 
   /* Find the start of the filename so we can split the directory from the */
   /* name. */
-  for (file_name_start = (wchar_t*)file + file_len;
+  for (file_name_start = (WCHAR*)file + file_len;
        file_name_start > file
            && file_name_start[-1] != L'\\'
            && file_name_start[-1] != L'/'
@@ -319,7 +399,7 @@ static wchar_t* search_path(const wchar_t *file,
       }
 
       /* Skip the separator that dir_end now points to */
-      if (dir_end != path) {
+      if (dir_end != path || *path == L';') {
         dir_end++;
       }
 
@@ -365,16 +445,16 @@ static wchar_t* search_path(const wchar_t *file,
  * Quotes command line arguments
  * Returns a pointer to the end (next char to be written) of the buffer
  */
-wchar_t* quote_cmd_arg(const wchar_t *source, wchar_t *target) {
-  int len = wcslen(source),
-      i, quote_hit;
-  wchar_t* start;
+WCHAR* quote_cmd_arg(const WCHAR *source, WCHAR *target) {
+  size_t len = wcslen(source);
+  size_t i;
+  int quote_hit;
+  WCHAR* start;
 
-  /*
-   * Check if the string must be quoted;
-   * if unnecessary, don't do it, it may only confuse older programs.
-   */
   if (len == 0) {
+    /* Need double quotation for empty argument */
+    *(target++) = L'"';
+    *(target++) = L'"';
     return target;
   }
 
@@ -438,80 +518,143 @@ wchar_t* quote_cmd_arg(const wchar_t *source, wchar_t *target) {
 }
 
 
-wchar_t* make_program_args(char** args, int verbatim_arguments) {
-  wchar_t* dst;
-  wchar_t* ptr;
+int make_program_args(char** args, int verbatim_arguments, WCHAR** dst_ptr) {
   char** arg;
-  size_t size = 0;
-  size_t len;
+  WCHAR* dst = NULL;
+  WCHAR* temp_buffer = NULL;
+  size_t dst_len = 0;
+  size_t temp_buffer_len = 0;
+  WCHAR* pos;
   int arg_count = 0;
-  wchar_t* buffer;
-  int arg_size;
-  int buffer_size = 0;
+  int err = 0;
 
   /* Count the required size. */
   for (arg = args; *arg; arg++) {
-    arg_size = uv_utf8_to_utf16(*arg, NULL, 0) * sizeof(wchar_t);
-    size += arg_size;
-    buffer_size = arg_size > buffer_size ? arg_size : buffer_size;
+    DWORD arg_len;
+
+    arg_len = MultiByteToWideChar(CP_UTF8,
+                                  0,
+                                  *arg,
+                                  -1,
+                                  NULL,
+                                  0);
+    if (arg_len == 0) {
+      return GetLastError();
+    }
+
+    dst_len += arg_len;
+
+    if (arg_len > temp_buffer_len)
+      temp_buffer_len = arg_len;
+
     arg_count++;
   }
 
-  /* Adjust for potential quotes. Also assume the worst-case scenario
+  /* Adjust for potential quotes. Also assume the worst-case scenario */
   /* that every character needs escaping, so we need twice as much space. */
-  size = size * 2 + arg_count * 2;
+  dst_len = dst_len * 2 + arg_count * 2;
 
-  dst = (wchar_t*)malloc(size);
-  if (!dst) {
-    uv_fatal_error(ERROR_OUTOFMEMORY, "malloc");
+  /* Allocate buffer for the final command line. */
+  dst = (WCHAR*) uv__malloc(dst_len * sizeof(WCHAR));
+  if (dst == NULL) {
+    err = ERROR_OUTOFMEMORY;
+    goto error;
   }
 
-  buffer = (wchar_t*)malloc(buffer_size);
-  if (!buffer) {
-    uv_fatal_error(ERROR_OUTOFMEMORY, "malloc");
+  /* Allocate temporary working buffer. */
+  temp_buffer = (WCHAR*) uv__malloc(temp_buffer_len * sizeof(WCHAR));
+  if (temp_buffer == NULL) {
+    err = ERROR_OUTOFMEMORY;
+    goto error;
   }
 
-  ptr = dst;
+  pos = dst;
   for (arg = args; *arg; arg++) {
-    len = uv_utf8_to_utf16(*arg, buffer, (size_t)(size - (ptr - dst)));
-    if (!len) {
+    DWORD arg_len;
+
+    /* Convert argument to wide char. */
+    arg_len = MultiByteToWideChar(CP_UTF8,
+                                  0,
+                                  *arg,
+                                  -1,
+                                  temp_buffer,
+                                  (int) (dst + dst_len - pos));
+    if (arg_len == 0) {
+      err = GetLastError();
       goto error;
     }
+
     if (verbatim_arguments) {
-      wcscpy(ptr, buffer);
-      ptr += len - 1;
+      /* Copy verbatim. */
+      wcscpy(pos, temp_buffer);
+      pos += arg_len - 1;
     } else {
-      ptr = quote_cmd_arg(buffer, ptr);
+      /* Quote/escape, if needed. */
+      pos = quote_cmd_arg(temp_buffer, pos);
     }
-    *ptr++ = *(arg + 1) ? L' ' : L'\0';
+
+    *pos++ = *(arg + 1) ? L' ' : L'\0';
   }
 
-  free(buffer);
-  return dst;
+  uv__free(temp_buffer);
+
+  *dst_ptr = dst;
+  return 0;
 
 error:
-  free(dst);
-  free(buffer);
-  return NULL;
+  uv__free(dst);
+  uv__free(temp_buffer);
+  return err;
 }
 
 
-/*
- * If we learn that people are passing in huge environment blocks
- * then we should probably qsort() the array and then bsearch()
- * to see if it contains this variable. But there are ownership
- * issues associated with that solution; this is the caller's
- * char**, and modifying it is rude.
- */
-static void check_required_vars_contains_var(env_var_t* required, int size,
-    const char* var) {
-  int i;
-  for (i = 0; i < size; ++i) {
-    if (_strnicmp(required[i].narrow, var, required[i].len) == 0) {
-      required[i].supplied =  1;
-      return;
+int env_strncmp(const wchar_t* a, int na, const wchar_t* b) {
+  wchar_t* a_eq;
+  wchar_t* b_eq;
+  wchar_t* A;
+  wchar_t* B;
+  int nb;
+  int r;
+
+  if (na < 0) {
+    a_eq = wcschr(a, L'=');
+    assert(a_eq);
+    na = (int)(long)(a_eq - a);
+  } else {
+    na--;
+  }
+  b_eq = wcschr(b, L'=');
+  assert(b_eq);
+  nb = b_eq - b;
+
+  A = alloca((na+1) * sizeof(wchar_t));
+  B = alloca((nb+1) * sizeof(wchar_t));
+
+  r = LCMapStringW(LOCALE_INVARIANT, LCMAP_UPPERCASE, a, na, A, na);
+  assert(r==na);
+  A[na] = L'\0';
+  r = LCMapStringW(LOCALE_INVARIANT, LCMAP_UPPERCASE, b, nb, B, nb);
+  assert(r==nb);
+  B[nb] = L'\0';
+
+  while (1) {
+    wchar_t AA = *A++;
+    wchar_t BB = *B++;
+    if (AA < BB) {
+      return -1;
+    } else if (AA > BB) {
+      return 1;
+    } else if (!AA && !BB) {
+      return 0;
     }
   }
+}
+
+
+static int qsort_wcscmp(const void *a, const void *b) {
+  wchar_t* astr = *(wchar_t* const*)a;
+  wchar_t* bstr = *(wchar_t* const*)b;
+  return env_strncmp(astr, -1, bstr);
 }
 
 
@@ -525,158 +668,201 @@ static void check_required_vars_contains_var(env_var_t* required, int size,
  * TEMP. SYSTEMDRIVE is probably also important. We therefore ensure that
  * these get defined if the input environment block does not contain any
  * values for them.
+ *
+ * Also add variables known to Cygwin to be required for correct
+ * subprocess operation in many cases:
+ * https://github.com/Alexpux/Cygwin/blob/b266b04fbbd3a595f02ea149e4306d3ab9b1fe3d/winsup/cygwin/environ.cc#L955
+ *
  */
-wchar_t* make_program_env(char** env_block) {
-  wchar_t* dst;
-  wchar_t* ptr;
+int make_program_env(char* env_block[], WCHAR** dst_ptr) {
+  WCHAR* dst;
+  WCHAR* ptr;
   char** env;
-  int env_len = 1 * sizeof(wchar_t); /* room for closing null */
+  size_t env_len = 0;
   int len;
-  int i;
+  size_t i;
   DWORD var_size;
+  size_t env_block_count = 1; /* 1 for null-terminator */
+  WCHAR* dst_copy;
+  WCHAR** ptr_copy;
+  WCHAR** env_copy;
+  DWORD* required_vars_value_len = alloca(n_required_vars * sizeof(DWORD*));
 
-  env_var_t required_vars[] = {
-    E_V("SYSTEMROOT"),
-    E_V("SYSTEMDRIVE"),
-    E_V("TEMP"),
-  };
-
+  /* first pass: determine size in UTF-16 */
   for (env = env_block; *env; env++) {
-    check_required_vars_contains_var(required_vars,
-                                     ARRAY_SIZE(required_vars),
-                                     *env);
-    env_len += (uv_utf8_to_utf16(*env, NULL, 0) * sizeof(wchar_t));
+    int len;
+    if (strchr(*env, '=')) {
+      len = MultiByteToWideChar(CP_UTF8,
+                                0,
+                                *env,
+                                -1,
+                                NULL,
+                                0);
+      if (len <= 0) {
+        return GetLastError();
+      }
+      env_len += len;
+      env_block_count++;
+    }
   }
 
-  for (i = 0; i < ARRAY_SIZE(required_vars); ++i) {
-    if (!required_vars[i].supplied) {
-      env_len += required_vars[i].len * sizeof(wchar_t);
+  /* second pass: copy to UTF-16 environment block */
+  dst_copy = (WCHAR*)uv__malloc(env_len * sizeof(WCHAR));
+  if (!dst_copy) {
+    return ERROR_OUTOFMEMORY;
+  }
+  env_copy = alloca(env_block_count * sizeof(WCHAR*));
+
+  ptr = dst_copy;
+  ptr_copy = env_copy;
+  for (env = env_block; *env; env++) {
+    if (strchr(*env, '=')) {
+      len = MultiByteToWideChar(CP_UTF8,
+                                0,
+                                *env,
+                                -1,
+                                ptr,
+                                (int) (env_len - (ptr - dst_copy)));
+      if (len <= 0) {
+        DWORD err = GetLastError();
+        uv__free(dst_copy);
+        return err;
+      }
+      *ptr_copy++ = ptr;
+      ptr += len;
+    }
+  }
+  *ptr_copy = NULL;
+  assert(env_len == ptr - dst_copy);
+
+  /* sort our (UTF-16) copy */
+  qsort(env_copy, env_block_count-1, sizeof(wchar_t*), qsort_wcscmp);
+
+  /* third pass: check for required variables */
+  for (ptr_copy = env_copy, i = 0; i < n_required_vars; ) {
+    int cmp;
+    if (!*ptr_copy) {
+      cmp = -1;
+    } else {
+      cmp = env_strncmp(required_vars[i].wide_eq,
+                       required_vars[i].len,
+                        *ptr_copy);
+    }
+    if (cmp < 0) {
+      /* missing required var */
       var_size = GetEnvironmentVariableW(required_vars[i].wide, NULL, 0);
-      if (var_size == 0) {
-        uv_fatal_error(GetLastError(), "GetEnvironmentVariableW");
+      required_vars_value_len[i] = var_size;
+      if (var_size != 0) {
+        env_len += required_vars[i].len;
+        env_len += var_size;
       }
-      required_vars[i].value_len = (int)var_size;
-      env_len += (int)var_size * sizeof(wchar_t);
+      i++;
+    } else {
+      ptr_copy++;
+      if (cmp == 0)
+        i++;
     }
   }
 
-  dst = malloc(env_len);
+  /* final pass: copy, in sort order, and inserting required variables */
+  dst = uv__malloc((1+env_len) * sizeof(WCHAR));
   if (!dst) {
-    uv_fatal_error(ERROR_OUTOFMEMORY, "malloc");
+    uv__free(dst_copy);
+    return ERROR_OUTOFMEMORY;
   }
 
-  ptr = dst;
-
-  for (env = env_block; *env; env++, ptr += len) {
-    len = uv_utf8_to_utf16(*env, ptr, (size_t)(env_len - (ptr - dst)));
-    if (!len) {
-      free(dst);
-      return NULL;
+  for (ptr = dst, ptr_copy = env_copy, i = 0;
+       *ptr_copy || i < n_required_vars;
+       ptr += len) {
+    int cmp;
+    if (i >= n_required_vars) {
+      cmp = 1;
+    } else if (!*ptr_copy) {
+      cmp = -1;
+    } else {
+      cmp = env_strncmp(required_vars[i].wide_eq,
+                        required_vars[i].len,
+                        *ptr_copy);
     }
-  }
-
-  for (i = 0; i < ARRAY_SIZE(required_vars); ++i) {
-    if (!required_vars[i].supplied) {
-      wcscpy(ptr, required_vars[i].wide);
-      ptr += required_vars[i].len - 1;
-      *ptr++ = L'=';
-      var_size = GetEnvironmentVariableW(required_vars[i].wide,
-                                         ptr,
-                                         required_vars[i].value_len);
-      if (var_size == 0) {
-        uv_fatal_error(GetLastError(), "GetEnvironmentVariableW");
+    if (cmp < 0) {
+      /* missing required var */
+      len = required_vars_value_len[i];
+      if (len) {
+        wcscpy(ptr, required_vars[i].wide_eq);
+        ptr += required_vars[i].len;
+        var_size = GetEnvironmentVariableW(required_vars[i].wide,
+                                           ptr,
+                                           (int) (env_len - (ptr - dst)));
+        if (var_size != len-1) { /* race condition? */
+          uv_fatal_error(GetLastError(), "GetEnvironmentVariableW");
+        }
       }
-      ptr += required_vars[i].value_len;
+      i++;
+    } else {
+      /* copy var from env_block */
+      len = wcslen(*ptr_copy) + 1;
+      wmemcpy(ptr, *ptr_copy, len);
+      ptr_copy++;
+      if (cmp == 0)
+        i++;
     }
   }
 
+  /* Terminate with an extra NULL. */
+  assert(env_len == (ptr - dst));
   *ptr = L'\0';
-  return dst;
+
+  uv__free(dst_copy);
+  *dst_ptr = dst;
+  return 0;
 }
 
+/*
+ * Attempt to find the value of the PATH environment variable in the child's
+ * preprocessed environment.
+ *
+ * If found, a pointer into `env` is returned. If not found, NULL is returned.
+ */
+static WCHAR* find_path(WCHAR *env) {
+  for (; env != NULL && *env != 0; env += wcslen(env) + 1) {
+    if (wcsncmp(env, L"PATH=", 5) == 0)
+      return &env[5];
+  }
+
+  return NULL;
+}
 
 /*
  * Called on Windows thread-pool thread to indicate that
  * a child process has exited.
  */
 static void CALLBACK exit_wait_callback(void* data, BOOLEAN didTimeout) {
-  uv_process_t* process = (uv_process_t*)data;
-  uv_loop_t* loop = process->loop;
-
-  assert(didTimeout == FALSE);
-  assert(process);
-
-  /* Post completed */
-  POST_COMPLETION_FOR_REQ(loop, &process->exit_req);
-}
-
-
-/*
- * Called on Windows thread-pool thread to indicate that
- * UnregisterWaitEx has completed.
- */
-static void CALLBACK close_wait_callback(void* data, BOOLEAN didTimeout) {
-  uv_process_t* process = (uv_process_t*)data;
-  uv_loop_t* loop = process->loop;
-
-  assert(didTimeout == FALSE);
-  assert(process);
-
-  /* Post completed */
-  POST_COMPLETION_FOR_REQ(loop, &process->close_req);
-}
-
-
-/*
- * Called on windows thread pool when CreateProcess failed. It writes an error
- * message to the process' intended stderr and then posts a PROCESS_EXIT
- * packet to the completion port.
- */
-static DWORD WINAPI spawn_failure(void* data) {
-  char syscall[] = "CreateProcessW: ";
-  char unknown[] = "unknown error\n";
   uv_process_t* process = (uv_process_t*) data;
   uv_loop_t* loop = process->loop;
-  HANDLE child_stderr = uv__stdio_handle(process->child_stdio_buffer, 2);
-  char* buf = NULL;
-  DWORD count, written;
 
-  if (child_stderr != INVALID_HANDLE_VALUE) {
-    WriteFile(child_stderr, syscall, sizeof(syscall) - 1, &written, NULL);
+  assert(didTimeout == FALSE);
+  assert(process);
+  assert(!process->exit_cb_pending);
 
-    count = FormatMessageA(FORMAT_MESSAGE_ALLOCATE_BUFFER |
-                           FORMAT_MESSAGE_FROM_SYSTEM |
-                           FORMAT_MESSAGE_IGNORE_INSERTS,
-                           NULL,
-                           process->spawn_errno,
-                           MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-                           (LPSTR) &buf,
-                           0,
-                           NULL);
-
-    if (buf != NULL && count > 0) {
-      WriteFile(child_stderr, buf, count, &written, NULL);
-      LocalFree(buf);
-    } else {
-      WriteFile(child_stderr, unknown, sizeof(unknown) - 1, &written, NULL);
-    }
-
-    FlushFileBuffers(child_stderr);
-  }
+  process->exit_cb_pending = 1;
 
   /* Post completed */
   POST_COMPLETION_FOR_REQ(loop, &process->exit_req);
-
-  return 0;
 }
 
 
 /* Called on main thread after a child process has exited. */
 void uv_process_proc_exit(uv_loop_t* loop, uv_process_t* handle) {
-  DWORD exit_code;
+  int64_t exit_code;
+  DWORD status;
 
-  /* FIXME: race condition. */
-  if (handle->flags & UV_HANDLE_CLOSING) {
+  assert(handle->exit_cb_pending);
+  handle->exit_cb_pending = 0;
+
+  /* If we're closing, don't call the exit callback. Just schedule a close */
+  /* callback now. */
+  if (handle->flags & UV__HANDLE_CLOSING) {
+    uv_want_endgame(loop, (uv_handle_t*) handle);
     return;
   }
 
@@ -686,16 +872,16 @@ void uv_process_proc_exit(uv_loop_t* loop, uv_process_t* handle) {
     handle->wait_handle = INVALID_HANDLE_VALUE;
   }
 
-  if (handle->process_handle == INVALID_HANDLE_VALUE ||
-      !GetExitCodeProcess(handle->process_handle, &exit_code)) {
-    /* The process never even started in the first place, or we were unable */
-    /* to obtain the exit code. */
-    exit_code = 127;
-  }
-
   /* Set the handle to inactive: no callbacks will be made after the exit */
   /* callback.*/
   uv__handle_stop(handle);
+
+  if (GetExitCodeProcess(handle->process_handle, &status)) {
+    exit_code = status;
+  } else {
+    /* Unable to to obtain the exit code. This should never happen. */
+    exit_code = uv_translate_sys_error(GetLastError());
+  }
 
   /* Fire the exit callback. */
   if (handle->exit_cb) {
@@ -704,139 +890,192 @@ void uv_process_proc_exit(uv_loop_t* loop, uv_process_t* handle) {
 }
 
 
-/* Called on main thread after UnregisterWaitEx finishes. */
-void uv_process_proc_close(uv_loop_t* loop, uv_process_t* handle) {
-  uv_want_endgame(loop, (uv_handle_t*)handle);
-}
-
-
 void uv_process_close(uv_loop_t* loop, uv_process_t* handle) {
-  uv__handle_start(handle);
+  uv__handle_closing(handle);
 
   if (handle->wait_handle != INVALID_HANDLE_VALUE) {
-    handle->close_handle = CreateEvent(NULL, FALSE, FALSE, NULL);
-    UnregisterWaitEx(handle->wait_handle, handle->close_handle);
-    handle->wait_handle = NULL;
+    /* This blocks until either the wait was cancelled, or the callback has */
+    /* completed. */
+    BOOL r = UnregisterWaitEx(handle->wait_handle, INVALID_HANDLE_VALUE);
+    if (!r) {
+      /* This should never happen, and if it happens, we can't recover... */
+      uv_fatal_error(GetLastError(), "UnregisterWaitEx");
+    }
 
-    RegisterWaitForSingleObject(&handle->wait_handle, handle->close_handle,
-        close_wait_callback, (void*)handle, INFINITE,
-        WT_EXECUTEINWAITTHREAD | WT_EXECUTEONLYONCE);
-  } else {
+    handle->wait_handle = INVALID_HANDLE_VALUE;
+  }
+
+  if (!handle->exit_cb_pending) {
     uv_want_endgame(loop, (uv_handle_t*)handle);
   }
 }
 
 
 void uv_process_endgame(uv_loop_t* loop, uv_process_t* handle) {
-  if (handle->flags & UV_HANDLE_CLOSING) {
-    assert(!(handle->flags & UV_HANDLE_CLOSED));
-    uv__handle_stop(handle);
+  assert(!handle->exit_cb_pending);
+  assert(handle->flags & UV__HANDLE_CLOSING);
+  assert(!(handle->flags & UV_HANDLE_CLOSED));
 
-    /* Clean-up the process handle. */
-    CloseHandle(handle->process_handle);
+  /* Clean-up the process handle. */
+  CloseHandle(handle->process_handle);
 
-    /* Clean up the child stdio ends that may have been left open. */
-    if (handle->child_stdio_buffer != NULL) {
-      uv__stdio_destroy(handle->child_stdio_buffer);
-    }
-
-    uv__handle_close(handle);
-  }
+  uv__handle_close(handle);
 }
 
 
-int uv_spawn(uv_loop_t* loop, uv_process_t* process,
-    uv_process_options_t options) {
-  int i, size, err = 0, keep_child_stdio_open = 0;
-  wchar_t* path = NULL;
+int uv_spawn(uv_loop_t* loop,
+             uv_process_t* process,
+             const uv_process_options_t* options) {
+  int i;
+  int err = 0;
+  WCHAR* path = NULL, *alloc_path = NULL;
   BOOL result;
-  wchar_t* application_path = NULL, *application = NULL, *arguments = NULL,
-           *env = NULL, *cwd = NULL;
+  WCHAR* application_path = NULL, *application = NULL, *arguments = NULL,
+         *env = NULL, *cwd = NULL;
   STARTUPINFOW startup;
   PROCESS_INFORMATION info;
   DWORD process_flags;
 
-  if (options.flags & (UV_PROCESS_SETGID | UV_PROCESS_SETUID)) {
-    uv__set_artificial_error(loop, UV_ENOTSUP);
-    return -1;
+  uv_process_init(loop, process);
+  process->exit_cb = options->exit_cb;
+
+  if (options->flags & (UV_PROCESS_SETGID | UV_PROCESS_SETUID)) {
+    return UV_ENOTSUP;
   }
 
-  assert(options.file != NULL);
-  assert(!(options.flags & ~(UV_PROCESS_WINDOWS_VERBATIM_ARGUMENTS |
-                             UV_PROCESS_DETACHED |
-                             UV_PROCESS_SETGID |
-                             UV_PROCESS_SETUID)));
+  if (options->file == NULL ||
+      options->args == NULL) {
+    return UV_EINVAL;
+  }
 
-  uv_process_init(loop, process);
+  assert(options->file != NULL);
+  assert(!(options->flags & ~(UV_PROCESS_DETACHED |
+                              UV_PROCESS_SETGID |
+                              UV_PROCESS_SETUID |
+                              UV_PROCESS_WINDOWS_HIDE |
+                              UV_PROCESS_WINDOWS_VERBATIM_ARGUMENTS)));
 
-  process->exit_cb = options.exit_cb;
-  UTF8_TO_UTF16(options.file, application);
-  arguments = options.args ? make_program_args(options.args,
-      options.flags & UV_PROCESS_WINDOWS_VERBATIM_ARGUMENTS) : NULL;
-  env = options.env ? make_program_env(options.env) : NULL;
+  err = uv_utf8_to_utf16_alloc(options->file, &application);
+  if (err)
+    goto done;
 
-  if (options.cwd) {
-    UTF8_TO_UTF16(options.cwd, cwd);
+  err = make_program_args(
+      options->args,
+      options->flags & UV_PROCESS_WINDOWS_VERBATIM_ARGUMENTS,
+      &arguments);
+  if (err)
+    goto done;
+
+  if (options->env) {
+     err = make_program_env(options->env, &env);
+     if (err)
+       goto done;
+  }
+
+  if (options->cwd) {
+    /* Explicit cwd */
+    err = uv_utf8_to_utf16_alloc(options->cwd, &cwd);
+    if (err)
+      goto done;
+
   } else {
-    size  = GetCurrentDirectoryW(0, NULL) * sizeof(wchar_t);
-    if (size) {
-      cwd = (wchar_t*)malloc(size);
-      if (!cwd) {
-        uv__set_artificial_error(loop, UV_ENOMEM);
-        err = -1;
-        goto done;
-      }
+    /* Inherit cwd */
+    DWORD cwd_len, r;
 
-      GetCurrentDirectoryW(size, cwd);
-    } else {
-      uv__set_sys_error(loop, GetLastError());
-      err = -1;
+    cwd_len = GetCurrentDirectoryW(0, NULL);
+    if (!cwd_len) {
+      err = GetLastError();
+      goto done;
+    }
+
+    cwd = (WCHAR*) uv__malloc(cwd_len * sizeof(WCHAR));
+    if (cwd == NULL) {
+      err = ERROR_OUTOFMEMORY;
+      goto done;
+    }
+
+    r = GetCurrentDirectoryW(cwd_len, cwd);
+    if (r == 0 || r >= cwd_len) {
+      err = GetLastError();
       goto done;
     }
   }
 
-  /* Get PATH env. variable. */
-  size = GetEnvironmentVariableW(L"PATH", NULL, 0) + 1;
-  path = (wchar_t*)malloc(size * sizeof(wchar_t));
-  if (!path) {
-    uv_fatal_error(ERROR_OUTOFMEMORY, "malloc");
+  /* Get PATH environment variable. */
+  path = find_path(env);
+  if (path == NULL) {
+    DWORD path_len, r;
+
+    path_len = GetEnvironmentVariableW(L"PATH", NULL, 0);
+    if (path_len == 0) {
+      err = GetLastError();
+      goto done;
+    }
+
+    alloc_path = (WCHAR*) uv__malloc(path_len * sizeof(WCHAR));
+    if (alloc_path == NULL) {
+      err = ERROR_OUTOFMEMORY;
+      goto done;
+    }
+    path = alloc_path;
+
+    r = GetEnvironmentVariableW(L"PATH", path, path_len);
+    if (r == 0 || r >= path_len) {
+      err = GetLastError();
+      goto done;
+    }
   }
-  GetEnvironmentVariableW(L"PATH", path, size * sizeof(wchar_t));
-  path[size - 1] = L'\0';
+
+  err = uv__stdio_create(loop, options, &process->child_stdio_buffer);
+  if (err)
+    goto done;
 
   application_path = search_path(application,
                                  cwd,
                                  path);
-
-  if (!application_path) {
-    /* CreateProcess will fail, but this allows us to pass this error to */
-    /* the user asynchronously. */
-    application_path = application;
-  }
-
-
-  if (uv__stdio_create(loop, &options, &process->child_stdio_buffer) < 0) {
-     err = -1;
-     goto done;
+  if (application_path == NULL) {
+    /* Not found. */
+    err = ERROR_FILE_NOT_FOUND;
+    goto done;
   }
 
   startup.cb = sizeof(startup);
   startup.lpReserved = NULL;
   startup.lpDesktop = NULL;
   startup.lpTitle = NULL;
-  startup.dwFlags = STARTF_USESTDHANDLES;
+  startup.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+
   startup.cbReserved2 = uv__stdio_size(process->child_stdio_buffer);
   startup.lpReserved2 = (BYTE*) process->child_stdio_buffer;
+
   startup.hStdInput = uv__stdio_handle(process->child_stdio_buffer, 0);
   startup.hStdOutput = uv__stdio_handle(process->child_stdio_buffer, 1);
   startup.hStdError = uv__stdio_handle(process->child_stdio_buffer, 2);
 
+  if (options->flags & UV_PROCESS_WINDOWS_HIDE) {
+    /* Use SW_HIDE to avoid any potential process window. */
+    startup.wShowWindow = SW_HIDE;
+  } else {
+    startup.wShowWindow = SW_SHOWDEFAULT;
+  }
+
   process_flags = CREATE_UNICODE_ENVIRONMENT;
-  if (options.flags & UV_PROCESS_DETACHED) {
+
+  if (options->flags & UV_PROCESS_DETACHED) {
+    /* Note that we're not setting the CREATE_BREAKAWAY_FROM_JOB flag. That
+     * means that libuv might not let you create a fully daemonized process
+     * when run under job control. However the type of job control that libuv
+     * itself creates doesn't trickle down to subprocesses so they can still
+     * daemonize.
+     *
+     * A reason to not do this is that CREATE_BREAKAWAY_FROM_JOB makes the
+     * CreateProcess call fail if we're under job control that doesn't allow
+     * breakaway.
+     */
     process_flags |= DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP;
   }
 
-  if (CreateProcessW(application_path,
+  if (!CreateProcessW(application_path,
                      arguments,
                      NULL,
                      NULL,
@@ -846,110 +1085,107 @@ int uv_spawn(uv_loop_t* loop, uv_process_t* process,
                      cwd,
                      &startup,
                      &info)) {
-    /* Spawn succeeded */
-    process->process_handle = info.hProcess;
-    process->pid = info.dwProcessId;
+    /* CreateProcessW failed. */
+    err = GetLastError();
+    goto done;
+  }
 
-    /* Set IPC pid to all IPC pipes. */
-    for (i = 0; i < options.stdio_count; i++) {
-      const uv_stdio_container_t* fdopt = &options.stdio[i];
-      if (fdopt->flags & UV_CREATE_PIPE &&
-          fdopt->data.stream->type == UV_NAMED_PIPE &&
-          ((uv_pipe_t*) fdopt->data.stream)->ipc) {
-        ((uv_pipe_t*) fdopt->data.stream)->ipc_pid = info.dwProcessId;
-      }
-    }
+  /* Spawn succeeded */
+  /* Beyond this point, failure is reported asynchronously. */
 
-    /* Setup notifications for when the child process exits. */
-    result = RegisterWaitForSingleObject(&process->wait_handle,
-        process->process_handle, exit_wait_callback, (void*)process, INFINITE,
-        WT_EXECUTEINWAITTHREAD | WT_EXECUTEONLYONCE);
-    if (!result) {
-      uv_fatal_error(GetLastError(), "RegisterWaitForSingleObject");
-    }
+  process->process_handle = info.hProcess;
+  process->pid = info.dwProcessId;
 
-    CloseHandle(info.hThread);
+  /* If the process isn't spawned as detached, assign to the global job */
+  /* object so windows will kill it when the parent process dies. */
+  if (!(options->flags & UV_PROCESS_DETACHED)) {
+    uv_once(&uv_global_job_handle_init_guard_, uv__init_global_job_handle);
 
-  } else {
-    /* CreateProcessW failed, but this failure should be delivered */
-    /* asynchronously to retain unix compatibility. So pretend spawn */
-    /* succeeded, and start a thread instead that prints an error */
-    /* to the child's intended stderr. */
-    process->spawn_errno = GetLastError();
-    keep_child_stdio_open = 1;
-    if (!QueueUserWorkItem(spawn_failure, process, WT_EXECUTEDEFAULT)) {
-      uv_fatal_error(GetLastError(), "QueueUserWorkItem");
+    if (!AssignProcessToJobObject(uv_global_job_handle_, info.hProcess)) {
+      /* AssignProcessToJobObject might fail if this process is under job
+       * control and the job doesn't have the
+       * JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK flag set, on a Windows version
+       * that doesn't support nested jobs.
+       *
+       * When that happens we just swallow the error and continue without
+       * establishing a kill-child-on-parent-exit relationship, otherwise
+       * there would be no way for libuv applications run under job control
+       * to spawn processes at all.
+       */
+      DWORD err = GetLastError();
+      if (err != ERROR_ACCESS_DENIED)
+        uv_fatal_error(err, "AssignProcessToJobObject");
     }
   }
 
-done:
-  free(application);
-  if (application_path != application) {
-    free(application_path);
+  /* Set IPC pid to all IPC pipes. */
+  for (i = 0; i < options->stdio_count; i++) {
+    const uv_stdio_container_t* fdopt = &options->stdio[i];
+    if (fdopt->flags & UV_CREATE_PIPE &&
+        fdopt->data.stream->type == UV_NAMED_PIPE &&
+        ((uv_pipe_t*) fdopt->data.stream)->ipc) {
+      ((uv_pipe_t*) fdopt->data.stream)->pipe.conn.ipc_pid = info.dwProcessId;
+    }
   }
-  free(arguments);
-  free(cwd);
-  free(env);
-  free(path);
 
-  /* Under normal circumstances we should close the stdio handles now - the */
-  /* the child now has its own duplicates, or something went horribly wrong */
-  /* The only exception is when CreateProcess has failed, then we actually */
-  /* need to keep the stdio handles to report the error asynchronously. */
-  if (process->child_stdio_buffer == NULL) {
-    /* Something went wrong before child stdio was initialized. */
-  } else if (!keep_child_stdio_open) {
+  /* Setup notifications for when the child process exits. */
+  result = RegisterWaitForSingleObject(&process->wait_handle,
+      process->process_handle, exit_wait_callback, (void*)process, INFINITE,
+      WT_EXECUTEINWAITTHREAD | WT_EXECUTEONLYONCE);
+  if (!result) {
+    uv_fatal_error(GetLastError(), "RegisterWaitForSingleObject");
+  }
+
+  CloseHandle(info.hThread);
+
+  assert(!err);
+
+  /* Make the handle active. It will remain active until the exit callback */
+  /* is made or the handle is closed, whichever happens first. */
+  uv__handle_start(process);
+
+  /* Cleanup, whether we succeeded or failed. */
+ done:
+  uv__free(application);
+  uv__free(application_path);
+  uv__free(arguments);
+  uv__free(cwd);
+  uv__free(env);
+  uv__free(alloc_path);
+
+  if (process->child_stdio_buffer != NULL) {
+    /* Clean up child stdio handles. */
     uv__stdio_destroy(process->child_stdio_buffer);
     process->child_stdio_buffer = NULL;
-  } else {
-    /* We're keeping the handles open, the thread pool is going to have */
-    /* it's way with them. But at least make them non-inheritable. */
-    uv__stdio_noinherit(process->child_stdio_buffer);
   }
 
-  if (err == 0) {
-    /* Spawn was succesful. The handle will be active until the exit */
-    /* is made or the handle is closed, whichever happens first. */
-    uv__handle_start(process);
-  } else {
-    /* Spawn was not successful. Clean up. */
-    if (process->wait_handle != INVALID_HANDLE_VALUE) {
-      UnregisterWait(process->wait_handle);
-      process->wait_handle = INVALID_HANDLE_VALUE;
-    }
-
-    if (process->process_handle != INVALID_HANDLE_VALUE) {
-      CloseHandle(process->process_handle);
-      process->process_handle = INVALID_HANDLE_VALUE;
-    }
-  }
-
-  return err;
+  return uv_translate_sys_error(err);
 }
 
 
-static uv_err_t uv__kill(HANDLE process_handle, int signum) {
+static int uv__kill(HANDLE process_handle, int signum) {
   switch (signum) {
     case SIGTERM:
     case SIGKILL:
     case SIGINT: {
       /* Unconditionally terminate the process. On Windows, killed processes */
       /* normally return 1. */
-      DWORD error, status;
+      DWORD status;
+      int err;
 
       if (TerminateProcess(process_handle, 1))
-        return uv_ok_;
+        return 0;
 
       /* If the process already exited before TerminateProcess was called, */
-      /* TerminateProcess will fail with ERROR_ACESS_DENIED. */
-      error = GetLastError();
-      if (error == ERROR_ACCESS_DENIED &&
+      /* TerminateProcess will fail with ERROR_ACCESS_DENIED. */
+      err = GetLastError();
+      if (err == ERROR_ACCESS_DENIED &&
           GetExitCodeProcess(process_handle, &status) &&
           status != STILL_ACTIVE) {
-        return uv__new_artificial_error(UV_ESRCH);
+        return UV_ESRCH;
       }
 
-      return uv__new_sys_error(error);
+      return uv_translate_sys_error(err);
     }
 
     case 0: {
@@ -957,34 +1193,31 @@ static uv_err_t uv__kill(HANDLE process_handle, int signum) {
       DWORD status;
 
       if (!GetExitCodeProcess(process_handle, &status))
-        return uv__new_sys_error(GetLastError());
+        return uv_translate_sys_error(GetLastError());
 
       if (status != STILL_ACTIVE)
-        return uv__new_artificial_error(UV_ESRCH);
+        return UV_ESRCH;
 
-      return uv_ok_;
+      return 0;
     }
 
     default:
       /* Unsupported signal. */
-      return uv__new_artificial_error(UV_ENOSYS);
+      return UV_ENOSYS;
   }
 }
 
 
 int uv_process_kill(uv_process_t* process, int signum) {
-  uv_err_t err;
+  int err;
 
   if (process->process_handle == INVALID_HANDLE_VALUE) {
-    uv__set_artificial_error(process->loop, UV_EINVAL);
-    return -1;
+    return UV_EINVAL;
   }
 
   err = uv__kill(process->process_handle, signum);
-
-  if (err.code != UV_OK) {
-    uv__set_error(process->loop, err.code, err.sys_errno_);
-    return -1;
+  if (err) {
+    return err;  /* err is already translated. */
   }
 
   process->exit_signal = signum;
@@ -993,21 +1226,22 @@ int uv_process_kill(uv_process_t* process, int signum) {
 }
 
 
-uv_err_t uv_kill(int pid, int signum) {
-  uv_err_t err;
+int uv_kill(int pid, int signum) {
+  int err;
   HANDLE process_handle = OpenProcess(PROCESS_TERMINATE |
     PROCESS_QUERY_INFORMATION, FALSE, pid);
 
   if (process_handle == NULL) {
-    if (GetLastError() == ERROR_INVALID_PARAMETER) {
-      return uv__new_artificial_error(UV_ESRCH);
+    err = GetLastError();
+    if (err == ERROR_INVALID_PARAMETER) {
+      return UV_ESRCH;
     } else {
-      return uv__new_sys_error(GetLastError());
+      return uv_translate_sys_error(err);
     }
   }
 
   err = uv__kill(process_handle, signum);
   CloseHandle(process_handle);
 
-  return err;
+  return err;  /* err is already translated. */
 }

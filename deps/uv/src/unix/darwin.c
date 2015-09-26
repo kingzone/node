@@ -27,12 +27,7 @@
 
 #include <ifaddrs.h>
 #include <net/if.h>
-
-#include <TargetConditionals.h>
-
-#if !TARGET_OS_IPHONE
-#include <CoreServices/CoreServices.h>
-#endif
+#include <net/if_dl.h>
 
 #include <mach/mach.h>
 #include <mach/mach_time.h>
@@ -41,60 +36,62 @@
 #include <sys/sysctl.h>
 #include <unistd.h>  /* sysconf */
 
-static char *process_title;
 
-#if TARGET_OS_IPHONE
-/* see: http://developer.apple.com/library/mac/#qa/qa1398/_index.html */
-uint64_t uv_hrtime() {
-    uint64_t time;
-    uint64_t enano;
-    static mach_timebase_info_data_t sTimebaseInfo;
+int uv__platform_loop_init(uv_loop_t* loop) {
+  loop->cf_state = NULL;
 
-    time = mach_absolute_time();
+  if (uv__kqueue_init(loop))
+    return -errno;
 
-    if (0 == sTimebaseInfo.denom) {
-        (void)mach_timebase_info(&sTimebaseInfo);
-    }
-
-    enano = time * sTimebaseInfo.numer / sTimebaseInfo.denom;
-
-    return enano;
+  return 0;
 }
-#else
-uint64_t uv_hrtime() {
-  uint64_t time;
-  Nanoseconds enano;
-  time = mach_absolute_time(); 
-  enano = AbsoluteToNanoseconds(*(AbsoluteTime *)&time);
-  return (*(uint64_t *)&enano);
+
+
+void uv__platform_loop_delete(uv_loop_t* loop) {
+  uv__fsevents_loop_delete(loop);
 }
-#endif
+
+
+uint64_t uv__hrtime(uv_clocktype_t type) {
+  static mach_timebase_info_data_t info;
+
+  if ((ACCESS_ONCE(uint32_t, info.numer) == 0 ||
+       ACCESS_ONCE(uint32_t, info.denom) == 0) &&
+      mach_timebase_info(&info) != KERN_SUCCESS)
+    abort();
+
+  return mach_absolute_time() * info.numer / info.denom;
+}
+
 
 int uv_exepath(char* buffer, size_t* size) {
-  uint32_t usize;
-  int result;
-  char* path;
-  char* fullpath;
+  /* realpath(exepath) may be > PATH_MAX so double it to be on the safe side. */
+  char abspath[PATH_MAX * 2 + 1];
+  char exepath[PATH_MAX + 1];
+  uint32_t exepath_size;
+  size_t abspath_size;
 
-  if (!buffer || !size) {
-    return -1;
-  }
+  if (buffer == NULL || size == NULL || *size == 0)
+    return -EINVAL;
 
-  usize = *size;
-  result = _NSGetExecutablePath(buffer, &usize);
-  if (result) return result;
+  exepath_size = sizeof(exepath);
+  if (_NSGetExecutablePath(exepath, &exepath_size))
+    return -EIO;
 
-  path = (char*)malloc(2 * PATH_MAX);
-  fullpath = realpath(buffer, path);
+  if (realpath(exepath, abspath) != abspath)
+    return -errno;
 
-  if (fullpath == NULL) {
-    free(path);
-    return -1;
-  }
+  abspath_size = strlen(abspath);
+  if (abspath_size == 0)
+    return -EIO;
 
-  strncpy(buffer, fullpath, *size);
-  free(fullpath);
-  *size = strlen(buffer);
+  *size -= 1;
+  if (*size > abspath_size)
+    *size = abspath_size;
+
+  memcpy(buffer, abspath, *size);
+  buffer[*size] = '\0';
+
   return 0;
 }
 
@@ -105,7 +102,7 @@ uint64_t uv_get_free_memory(void) {
 
   if (host_statistics(mach_host_self(), HOST_VM_INFO,
                       (host_info_t)&info, &count) != KERN_SUCCESS) {
-    return -1;
+    return -EINVAL;  /* FIXME(bnoordhuis) Translate error. */
   }
 
   return (uint64_t) info.free_count * sysconf(_SC_PAGESIZE);
@@ -117,9 +114,8 @@ uint64_t uv_get_total_memory(void) {
   int which[] = {CTL_HW, HW_MEMSIZE};
   size_t size = sizeof(info);
 
-  if (sysctl(which, 2, &info, &size, NULL, 0) < 0) {
-    return -1;
-  }
+  if (sysctl(which, 2, &info, &size, NULL, 0))
+    return -errno;
 
   return (uint64_t) info;
 }
@@ -138,67 +134,43 @@ void uv_loadavg(double avg[3]) {
 }
 
 
-char** uv_setup_args(int argc, char** argv) {
-  process_title = argc ? strdup(argv[0]) : NULL;
-  return argv;
+int uv_resident_set_memory(size_t* rss) {
+  mach_msg_type_number_t count;
+  task_basic_info_data_t info;
+  kern_return_t err;
+
+  count = TASK_BASIC_INFO_COUNT;
+  err = task_info(mach_task_self(),
+                  TASK_BASIC_INFO,
+                  (task_info_t) &info,
+                  &count);
+  (void) &err;
+  /* task_info(TASK_BASIC_INFO) cannot really fail. Anything other than
+   * KERN_SUCCESS implies a libuv bug.
+   */
+  assert(err == KERN_SUCCESS);
+  *rss = info.resident_size;
+
+  return 0;
 }
 
 
-uv_err_t uv_set_process_title(const char* title) {
-  /* TODO implement me */
-  return uv__new_artificial_error(UV_ENOSYS);
-}
-
-
-uv_err_t uv_get_process_title(char* buffer, size_t size) {
-  if (process_title) {
-    strncpy(buffer, process_title, size);
-  } else {
-    if (size > 0) {
-      buffer[0] = '\0';
-    }
-  }
-
-  return uv_ok_;
-}
-
-
-uv_err_t uv_resident_set_memory(size_t* rss) {
-  struct task_basic_info t_info;
-  mach_msg_type_number_t t_info_count = TASK_BASIC_INFO_COUNT;
-
-  int r = task_info(mach_task_self(),
-                    TASK_BASIC_INFO,
-                    (task_info_t)&t_info,
-                    &t_info_count);
-
-  if (r != KERN_SUCCESS) {
-    return uv__new_sys_error(errno);
-  }
-
-  *rss = t_info.resident_size;
-
-  return uv_ok_;
-}
-
-
-uv_err_t uv_uptime(double* uptime) {
+int uv_uptime(double* uptime) {
   time_t now;
   struct timeval info;
   size_t size = sizeof(info);
   static int which[] = {CTL_KERN, KERN_BOOTTIME};
 
-  if (sysctl(which, 2, &info, &size, NULL, 0) < 0) {
-    return uv__new_sys_error(errno);
-  }
+  if (sysctl(which, 2, &info, &size, NULL, 0))
+    return -errno;
+
   now = time(NULL);
+  *uptime = now - info.tv_sec;
 
-  *uptime = (double)(now - info.tv_sec);
-
-  return uv_ok_;
+  return 0;
 }
 
-uv_err_t uv_cpu_info(uv_cpu_info_t** cpu_infos, int* count) {
+int uv_cpu_info(uv_cpu_info_t** cpu_infos, int* count) {
   unsigned int ticks = (unsigned int)sysconf(_SC_CLK_TCK),
                multiplier = ((uint64_t)1000L / ticks);
   char model[512];
@@ -211,25 +183,24 @@ uv_err_t uv_cpu_info(uv_cpu_info_t** cpu_infos, int* count) {
   uv_cpu_info_t* cpu_info;
 
   size = sizeof(model);
-  if (sysctlbyname("machdep.cpu.brand_string", &model, &size, NULL, 0) < 0 &&
-      sysctlbyname("hw.model", &model, &size, NULL, 0) < 0) {
-    return uv__new_sys_error(errno);
+  if (sysctlbyname("machdep.cpu.brand_string", &model, &size, NULL, 0) &&
+      sysctlbyname("hw.model", &model, &size, NULL, 0)) {
+    return -errno;
   }
+
   size = sizeof(cpuspeed);
-  if (sysctlbyname("hw.cpufrequency", &cpuspeed, &size, NULL, 0) < 0) {
-    return uv__new_sys_error(errno);
-  }
+  if (sysctlbyname("hw.cpufrequency", &cpuspeed, &size, NULL, 0))
+    return -errno;
 
   if (host_processor_info(mach_host_self(), PROCESSOR_CPU_LOAD_INFO, &numcpus,
                           (processor_info_array_t*)&info,
                           &msg_type) != KERN_SUCCESS) {
-    return uv__new_sys_error(errno);
+    return -EINVAL;  /* FIXME(bnoordhuis) Translate error. */
   }
 
-  *cpu_infos = (uv_cpu_info_t*)malloc(numcpus * sizeof(uv_cpu_info_t));
-  if (!(*cpu_infos)) {
-    return uv__new_artificial_error(UV_ENOMEM);
-  }
+  *cpu_infos = uv__malloc(numcpus * sizeof(**cpu_infos));
+  if (!(*cpu_infos))
+    return -ENOMEM;  /* FIXME(bnoordhuis) Deallocate info? */
 
   *count = numcpus;
 
@@ -242,12 +213,12 @@ uv_err_t uv_cpu_info(uv_cpu_info_t** cpu_infos, int* count) {
     cpu_info->cpu_times.idle = (uint64_t)(info[i].cpu_ticks[2]) * multiplier;
     cpu_info->cpu_times.irq = 0;
 
-    cpu_info->model = strdup(model);
+    cpu_info->model = uv__strdup(model);
     cpu_info->speed = cpuspeed/1000000;
   }
   vm_deallocate(mach_task_self(), (vm_address_t)info, msg_type);
 
-  return uv_ok_;
+  return 0;
 }
 
 
@@ -255,28 +226,27 @@ void uv_free_cpu_info(uv_cpu_info_t* cpu_infos, int count) {
   int i;
 
   for (i = 0; i < count; i++) {
-    free(cpu_infos[i].model);
+    uv__free(cpu_infos[i].model);
   }
 
-  free(cpu_infos);
+  uv__free(cpu_infos);
 }
 
 
-uv_err_t uv_interface_addresses(uv_interface_address_t** addresses,
-  int* count) {
+int uv_interface_addresses(uv_interface_address_t** addresses, int* count) {
   struct ifaddrs *addrs, *ent;
-  char ip[INET6_ADDRSTRLEN];
   uv_interface_address_t* address;
+  int i;
+  struct sockaddr_dl *sa_addr;
 
-  if (getifaddrs(&addrs) != 0) {
-    return uv__new_sys_error(errno);
-  }
+  if (getifaddrs(&addrs))
+    return -errno;
 
   *count = 0;
 
   /* Count the number of interfaces */
   for (ent = addrs; ent != NULL; ent = ent->ifa_next) {
-    if (!(ent->ifa_flags & IFF_UP && ent->ifa_flags & IFF_RUNNING) ||
+    if (!((ent->ifa_flags & IFF_UP) && (ent->ifa_flags & IFF_RUNNING)) ||
         (ent->ifa_addr == NULL) ||
         (ent->ifa_addr->sa_family == AF_LINK)) {
       continue;
@@ -285,48 +255,67 @@ uv_err_t uv_interface_addresses(uv_interface_address_t** addresses,
     (*count)++;
   }
 
-  *addresses = (uv_interface_address_t*)
-    malloc(*count * sizeof(uv_interface_address_t));
-  if (!(*addresses)) {
-    return uv__new_artificial_error(UV_ENOMEM);
-  }
+  *addresses = uv__malloc(*count * sizeof(**addresses));
+  if (!(*addresses))
+    return -ENOMEM;
 
   address = *addresses;
 
   for (ent = addrs; ent != NULL; ent = ent->ifa_next) {
-    bzero(&ip, sizeof (ip));
-    if (!(ent->ifa_flags & IFF_UP && ent->ifa_flags & IFF_RUNNING)) {
+    if (!((ent->ifa_flags & IFF_UP) && (ent->ifa_flags & IFF_RUNNING)))
       continue;
-    }
 
-    if (ent->ifa_addr == NULL) {
+    if (ent->ifa_addr == NULL)
       continue;
-    }
 
     /*
      * On Mac OS X getifaddrs returns information related to Mac Addresses for
      * various devices, such as firewire, etc. These are not relevant here.
      */
-    if (ent->ifa_addr->sa_family == AF_LINK) {
+    if (ent->ifa_addr->sa_family == AF_LINK)
       continue;
-    }
 
-    address->name = strdup(ent->ifa_name);
+    address->name = uv__strdup(ent->ifa_name);
 
     if (ent->ifa_addr->sa_family == AF_INET6) {
-      address->address.address6 = *((struct sockaddr_in6 *)ent->ifa_addr);
+      address->address.address6 = *((struct sockaddr_in6*) ent->ifa_addr);
     } else {
-      address->address.address4 = *((struct sockaddr_in *)ent->ifa_addr);
+      address->address.address4 = *((struct sockaddr_in*) ent->ifa_addr);
     }
 
-    address->is_internal = ent->ifa_flags & IFF_LOOPBACK ? 1 : 0;
+    if (ent->ifa_netmask->sa_family == AF_INET6) {
+      address->netmask.netmask6 = *((struct sockaddr_in6*) ent->ifa_netmask);
+    } else {
+      address->netmask.netmask4 = *((struct sockaddr_in*) ent->ifa_netmask);
+    }
+
+    address->is_internal = !!(ent->ifa_flags & IFF_LOOPBACK);
 
     address++;
   }
 
+  /* Fill in physical addresses for each interface */
+  for (ent = addrs; ent != NULL; ent = ent->ifa_next) {
+    if (!((ent->ifa_flags & IFF_UP) && (ent->ifa_flags & IFF_RUNNING)) ||
+        (ent->ifa_addr == NULL) ||
+        (ent->ifa_addr->sa_family != AF_LINK)) {
+      continue;
+    }
+
+    address = *addresses;
+
+    for (i = 0; i < (*count); i++) {
+      if (strcmp(address->name, ent->ifa_name) == 0) {
+        sa_addr = (struct sockaddr_dl*)(ent->ifa_addr);
+        memcpy(address->phys_addr, LLADDR(sa_addr), sizeof(address->phys_addr));
+      }
+      address++;
+    }
+  }
+
   freeifaddrs(addrs);
 
-  return uv_ok_;
+  return 0;
 }
 
 
@@ -335,8 +324,8 @@ void uv_free_interface_addresses(uv_interface_address_t* addresses,
   int i;
 
   for (i = 0; i < count; i++) {
-    free(addresses[i].name);
+    uv__free(addresses[i].name);
   }
 
-  free(addresses);
+  uv__free(addresses);
 }

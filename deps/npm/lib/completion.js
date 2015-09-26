@@ -5,7 +5,9 @@ completion.usage = "npm completion >> ~/.bashrc\n"
                  + "npm completion >> ~/.zshrc\n"
                  + "source <(npm completion)"
 
-var configDefs = require("./utils/config-defs.js")
+var npm = require("./npm.js")
+  , npmconf = require("./config/core.js")
+  , configDefs = npmconf.defs
   , configTypes = configDefs.types
   , shorthands = configDefs.shorthands
   , nopt = require("nopt")
@@ -14,7 +16,8 @@ var configDefs = require("./utils/config-defs.js")
     })
   , shorthandNames = Object.keys(shorthands)
   , allConfs = configNames.concat(shorthandNames)
-  , npm = require("./npm.js")
+  , once = require("once")
+
 
 completion.completion = function (opts, cb) {
   if (opts.w > 3) return cb()
@@ -23,12 +26,11 @@ completion.completion = function (opts, cb) {
     , path = require("path")
     , bashExists = null
     , zshExists = null
-    , bashProfExists = null
-  fs.stat(path.resolve(process.env.HOME, ".bashrc"), function (er, b) {
+  fs.stat(path.resolve(process.env.HOME, ".bashrc"), function (er) {
     bashExists = !er
     next()
   })
-  fs.stat(path.resolve(process.env.HOME, ".zshrc"), function (er, b) {
+  fs.stat(path.resolve(process.env.HOME, ".zshrc"), function (er) {
     zshExists = !er
     next()
   })
@@ -76,7 +78,6 @@ function completion (args, cb) {
     , word = words[w]
     , line = process.env.COMP_LINE
     , point = +process.env.COMP_POINT
-    , lineLength = line.length
     , partialLine = line.substr(0, point)
     , partialWords = words.slice(0, w)
 
@@ -148,11 +149,15 @@ function dumpScript (cb) {
     , path = require("path")
     , p = path.resolve(__dirname, "utils/completion.sh")
 
+  // The Darwin patch below results in callbacks first for the write and then
+  // for the error handler, so make sure we only call our callback once.
+  cb = once(cb)
+
   fs.readFile(p, "utf8", function (er, d) {
     if (er) return cb(er)
     d = d.replace(/^\#\!.*?\n/, "")
 
-    process.stdout.write(d, function (n) { cb() })
+    process.stdout.write(d, function () { cb() })
     process.stdout.on("error", function (er) {
       // Darwin is a real dick sometimes.
       //
@@ -164,7 +169,7 @@ function dumpScript (cb) {
       // Really, one should not be tossing away EPIPE errors, or any
       // errors, so casually.  But, without this, `. <(npm completion)`
       // can never ever work on OS X.
-      if (er.errno === require("constants").EPIPE) er = null
+      if (er.errno === "EPIPE") er = null
       cb(er)
     })
 
@@ -211,8 +216,6 @@ function configCompl (opts, cb) {
     , split = word.match(/^(-+)((?:no-)*)(.*)$/)
     , dashes = split[1]
     , no = split[2]
-    , conf = split[3]
-    , confs = allConfs
     , flags = configNames.filter(isFlag)
   console.error(flags)
 
@@ -226,7 +229,7 @@ function configCompl (opts, cb) {
 // expand with the valid values of various config values.
 // not yet implemented.
 function configValueCompl (opts, cb) {
-  console.error('configValue', opts)
+  console.error("configValue", opts)
   return cb(null, [])
 }
 
@@ -234,7 +237,6 @@ function configValueCompl (opts, cb) {
 function isFlag (word) {
   // shorthands never take args.
   var split = word.match(/^(-*)((?:no-)+)?(.*)$/)
-    , dashes = split[1]
     , no = split[2]
     , conf = split[3]
   return no || configTypes[conf] === Boolean || shorthands[conf]

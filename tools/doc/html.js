@@ -48,7 +48,7 @@ function render(lexed, filename, template, cb) {
 
     template = template.replace(/__FILENAME__/g, filename);
     template = template.replace(/__SECTION__/g, section);
-    template = template.replace(/__VERSION__/g, process.version);
+    template = template.replace(/__VERSION__/g, process.env.NODE_DOC_VERSION);
     template = template.replace(/__TOC__/g, toc);
 
     // content has to be the last thing we do with
@@ -69,6 +69,11 @@ function parseLists(input) {
   var output = [];
   output.links = input.links;
   input.forEach(function(tok) {
+    if (tok.type === 'code' && tok.text.match(/Stability:.*/g)) {
+      tok.text = parseAPIHeader(tok.text);
+      output.push({ type: 'html', text: tok.text });
+      return;
+    }
     if (state === null) {
       if (tok.type === 'heading') {
         state = 'AFTERHEADING';
@@ -117,11 +122,22 @@ function parseLists(input) {
 
 
 function parseListItem(text) {
-  text = text.replace(/\{([^\}]+)\}/, '<span class="type">$1</span>');
+  var parts = text.split('`');
+  var i;
+
+  for (i = 0; i < parts.length; i += 2) {
+    parts[i] = parts[i].replace(/\{([^\}]+)\}/, '<span class="type">$1</span>');
+  }
+
   //XXX maybe put more stuff here?
-  return text;
+  return parts.join('`');
 }
 
+function parseAPIHeader(text) {
+  text = text.replace(/(.*:)\s(\d)([\s\S]*)/,
+                      '<pre class="api_stability_$2">$1 $2$3</pre>');
+  return text;
+}
 
 // section is just the first heading
 function getSection(lexed) {

@@ -48,7 +48,11 @@ var server = tls.createServer(options, function(socket) {
 });
 
 function unauthorized() {
-  var socket = tls.connect(common.PORT, function() {
+  var socket = tls.connect({
+    port: common.PORT,
+    servername: 'localhost',
+    rejectUnauthorized: false
+  }, function() {
     assert(!socket.authorized);
     socket.end();
     rejectUnauthorized();
@@ -61,7 +65,7 @@ function unauthorized() {
 
 function rejectUnauthorized() {
   var socket = tls.connect(common.PORT, {
-    rejectUnauthorized: true
+    servername: 'localhost'
   }, function() {
     assert(false);
   });
@@ -74,8 +78,8 @@ function rejectUnauthorized() {
 
 function authorized() {
   var socket = tls.connect(common.PORT, {
-    rejectUnauthorized: true,
-    ca: [fs.readFileSync(path.join(common.fixturesDir, 'test_cert.pem'))]
+    ca: [fs.readFileSync(path.join(common.fixturesDir, 'test_cert.pem'))],
+    servername: 'localhost'
   }, function() {
     assert(socket.authorized);
     socket.end();

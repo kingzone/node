@@ -1,5 +1,7 @@
 # REPL
 
+    Stability: 3 - Stable
+
 A Read-Eval-Print-Loop (REPL) is available both as a standalone program and
 easily includable in other programs. The REPL provides a way to interactively
 run JavaScript and see the results.  It can be used for debugging, testing, or
@@ -30,8 +32,9 @@ For example, you could add this to your bashrc file:
 
 ## repl.start(options)
 
-Returns and starts a `REPLServer` instance. Accepts an "options" Object that
-takes the following values:
+Returns and starts a `REPLServer` instance, that inherits from 
+[Readline Interface][]. Accepts an "options" Object that takes 
+the following values:
 
  - `prompt` - the prompt and `stream` for all I/O. Defaults to `> `.
 
@@ -135,6 +138,27 @@ Example of listening for `exit`:
     });
 
 
+### Event: 'reset'
+
+`function (context) {}`
+
+Emitted when the REPL's context is reset. This happens when you type `.clear`.
+If you start the repl with `{ useGlobal: true }` then this event will never
+be emitted.
+
+Example of listening for `reset`:
+
+    // Extend the initial repl context.
+    r = repl.start({ options ... });
+    someExtension.extend(r.context);
+
+    // When a new context is created extend it as well.
+    r.on('reset', function (context) {
+      console.log('repl has a new context');
+      someExtension.extend(context);
+    });
+
+
 ## REPL Features
 
 <!-- type=misc -->
@@ -159,7 +183,7 @@ associated with each `REPLServer`.  For example:
     var repl = require("repl"),
         msg = "message";
 
-    repl.start().context.m = msg;
+    repl.start("> ").context.m = msg;
 
 Things in the `context` object appear as local within the REPL:
 

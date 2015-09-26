@@ -24,6 +24,9 @@ if (!process.versions.openssl) {
   process.exit(0);
 }
 
+// disable strict server certificate validation by the client
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+
 var common = require('../common');
 var assert = require('assert');
 
@@ -167,6 +170,7 @@ function makeReq(path, port, error, host, ca) {
       server2.close();
       server3.close();
     }
+    res.resume();
   })
 }
 
@@ -176,10 +180,12 @@ function allListening() {
   // server1: host 'agent1', signed by ca1
   makeReq('/inv1', port1, 'UNABLE_TO_VERIFY_LEAF_SIGNATURE');
   makeReq('/inv1-ca1', port1,
-          'Hostname/IP doesn\'t match certificate\'s altnames',
+          'Hostname/IP doesn\'t match certificate\'s altnames: ' +
+              '"Host: localhost. is not cert\'s CN: agent1"',
           null, ca1);
   makeReq('/inv1-ca1ca2', port1,
-          'Hostname/IP doesn\'t match certificate\'s altnames',
+          'Hostname/IP doesn\'t match certificate\'s altnames: ' +
+              '"Host: localhost. is not cert\'s CN: agent1"',
           null, [ca1, ca2]);
   makeReq('/val1-ca1', port1, null, 'agent1', ca1);
   makeReq('/val1-ca1ca2', port1, null, 'agent1', [ca1, ca2]);
@@ -197,10 +203,12 @@ function allListening() {
   // server3: host 'agent3', signed by ca2
   makeReq('/inv3', port3, 'UNABLE_TO_VERIFY_LEAF_SIGNATURE');
   makeReq('/inv3-ca2', port3,
-          'Hostname/IP doesn\'t match certificate\'s altnames',
+          'Hostname/IP doesn\'t match certificate\'s altnames: ' +
+              '"Host: localhost. is not cert\'s CN: agent3"',
           null, ca2);
   makeReq('/inv3-ca1ca2', port3,
-          'Hostname/IP doesn\'t match certificate\'s altnames',
+          'Hostname/IP doesn\'t match certificate\'s altnames: ' +
+              '"Host: localhost. is not cert\'s CN: agent3"',
           null, [ca1, ca2]);
   makeReq('/val3-ca2', port3, null, 'agent3', ca2);
   makeReq('/val3-ca1ca2', port3, null, 'agent3', [ca1, ca2]);

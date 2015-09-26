@@ -19,13 +19,12 @@ var log = require("npmlog")
 log.pause() // will be unpaused when config is loaded.
 log.info("it worked if it ends with", "ok")
 
-var fs = require("graceful-fs")
-  , path = require("path")
+var path = require("path")
   , npm = require("../lib/npm.js")
-  , ini = require("../lib/utils/ini.js")
+  , npmconf = require("../lib/config/core.js")
   , errorHandler = require("../lib/utils/error-handler.js")
 
-  , configDefs = require("../lib/utils/config-defs.js")
+  , configDefs = npmconf.defs
   , shorthands = configDefs.shorthands
   , types = configDefs.types
   , nopt = require("nopt")
@@ -50,24 +49,13 @@ if (conf.version) {
 }
 
 if (conf.versions) {
-  var v = process.versions
-  v.npm = npm.version
-  console.log(v)
-  return
+  npm.command = "version"
+  conf.usage = false
+  npm.argv = []
 }
 
 log.info("using", "npm@%s", npm.version)
 log.info("using", "node@%s", process.version)
-
-// make sure that this version of node works with this version of npm.
-var semver = require("semver")
-  , nodeVer = process.version
-  , reqVer = npm.nodeVersionRequired
-if (reqVer && !semver.satisfies(nodeVer, reqVer)) {
-  return errorHandler(new Error(
-    "npm doesn't work with node " + nodeVer
-    + "\nRequired: node@" + reqVer), true)
-}
 
 process.on("uncaughtException", errorHandler)
 

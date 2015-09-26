@@ -40,17 +40,16 @@ var server = net.createServer(function(conn) {
       '\r\n' +
       body;
 
-  conn.write(response, function() {
-    conn.destroy();
-    server.close();
-  });
+  conn.end(response);
+  server.close();
 });
 
 server.listen(common.PORT, function() {
   http.get({host: '127.0.0.1', port: common.PORT}, function(res) {
     assert.equal(res.headers['content-type'],
-                 'text/plain;x-unix-mode=0600;name="hello.txt"');
+                 'text/plain; x-unix-mode=0600; name="hello.txt"');
     gotResponse = true;
+    res.destroy();
   });
 });
 

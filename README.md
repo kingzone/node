@@ -1,46 +1,8 @@
-Evented I/O for V8 javascript. [![Build Status](https://secure.travis-ci.org/joyent/node.png)](http://travis-ci.org/joyent/node)
-===
 
-### To build:
+This repository is an archive of Node.js before the move to [nodejs/node](https://github.com/nodejs/node).
 
-Unix/Macintosh. Requires python 2.6 or 2.7 and GNU make 3.81 or newer:
+It still contains issues and pull requests that are relevant to Node versions v0.10 and v0.12, and that were opened before the move to [nodejs/node](https://github.com/nodejs/node).
+New issues and pull requests, for all branches, should be opened at [nodejs/node](https://github.com/nodejs/node). 
+New issues and pull requests opened here will automatically be rejected.
 
-    ./configure
-    make
-    make install
-
-Windows:
-
-    vcbuild.bat
-
-### To run the tests:
-
-Unix/Macintosh:
-
-    make test
-
-Windows:
-
-    vcbuild.bat test
-
-### To build the documentation:
-
-    make doc
-
-### To read the documentation:
-
-    man doc/node.1
-
-Resources for Newcomers
----
-  - [The Wiki](https://github.com/joyent/node/wiki)
-  - [nodejs.org](http://nodejs.org/)
-  - [how to install node.js and npm (node package manager)](http://joyeur.com/2010/12/10/installing-node-and-npm/)
-  - [list of modules](https://github.com/joyent/node/wiki/modules)
-  - [searching the npm registry](http://search.npmjs.org/)
-  - [list of companies and projects using node](https://github.com/joyent/node/wiki/Projects,-Applications,-and-Companies-Using-Node)
-  - [node.js mailing list](http://groups.google.com/group/nodejs)
-  - irc chatroom, [#node.js on freenode.net](http://webchat.freenode.net?channels=node.js&uio=d4)
-  - [community](https://github.com/joyent/node/wiki/Community)
-  - [contributing](https://github.com/joyent/node/wiki/Contributing)
-  - [big list of all the helpful wiki pages](https://github.com/joyent/node/wiki/_pages)
+The pre-convergence version of the README is available [here](https://github.com/nodejs/node-v0.x-archive/blob/master/README-pre-convergence.md). 

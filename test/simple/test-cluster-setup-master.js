@@ -39,6 +39,12 @@ if (cluster.isWorker) {
 
   var totalWorkers = 2;
 
+  // Setup master
+  cluster.setupMaster({
+    args: ['custom argument'],
+    silent: true
+  });
+
   cluster.once('setup', function() {
     checks.setupEvent = true;
 
@@ -51,12 +57,6 @@ if (cluster.isWorker) {
     }
   });
 
-  // Setup master
-  cluster.setupMaster({
-    args: ['custom argument'],
-    silent: true
-  });
-
   var correctIn = 0;
 
   cluster.on('online', function lisenter(worker) {
@@ -66,7 +66,7 @@ if (cluster.isWorker) {
       if (correctIn === totalWorkers) {
         checks.args = true;
       }
-      worker.destroy();
+      worker.kill();
     });
 
     // All workers are online

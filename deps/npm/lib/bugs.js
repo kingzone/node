@@ -3,60 +3,67 @@ module.exports = bugs
 
 bugs.usage = "npm bugs <pkgname>"
 
-var exec = require("./utils/exec.js")
-  , npm = require("./npm.js")
-  , registry = npm.registry
+var npm = require("./npm.js")
   , log = require("npmlog")
+  , opener = require("opener")
+  , path = require("path")
+  , readJson = require("read-package-json")
+  , npa = require("npm-package-arg")
+  , fs = require("fs")
+  , mapToRegistry = require("./utils/map-to-registry.js")
 
 bugs.completion = function (opts, cb) {
-  if (opts.conf.argv.remain.length > 2) return cb()
-  registry.get("/-/short", 60000, function (er, list) {
-    return cb(null, list || [])
-  })
+  // FIXME: there used to be registry completion here, but it stopped making
+  // sense somewhere around 50,000 packages on the registry
+  cb()
 }
 
 function bugs (args, cb) {
-  if (!args.length) return cb(bugs.usage)
-  var n = args[0].split("@").shift()
-  registry.get(n + "/latest", 3600, function (er, d) {
-    if (er) return cb(er)
-    var bugs = d.bugs
-      , repo = d.repository || d.repositories
-    if (bugs) {
-      if (typeof bugs === "string") return open(bugs, cb)
-      if (bugs.url) return open(bugs.url, cb)
+  var n = args.length && npa(args[0]).name || "."
+  fs.stat(n, function (er, s) {
+    if (er) {
+      if (er.code === "ENOENT") return callRegistry(n, cb)
+      return cb(er)
     }
-    if (repo) {
-      if (Array.isArray(repo)) repo = repo.shift()
-      if (repo.hasOwnProperty("url")) repo = repo.url
-      log.verbose("repository", repo)
-      if (repo && repo.match(/^(https?:\/\/|git(:\/\/|@))github.com/)) {
-        return open(repo.replace(/^git(@|:\/\/)/, "http://")
-                        .replace(/^https?:\/\/github.com:/, "github.com/")
-                        .replace(/\.git$/, '')+"/issues", cb)
-      }
-    }
-    return open("http://search.npmjs.org/#/" + d.name, cb)
+    if (!s.isDirectory()) return callRegistry(n, cb)
+    readJson(path.resolve(n, "package.json"), function(er, d) {
+      if (er) return cb(er)
+      getUrlAndOpen(d, cb)
+    })
   })
 }
 
-function open (url, cb) {
-  var args = [url]
-    , browser = npm.config.get("browser")
-
-  if (process.platform === "win32" && browser === "start") {
-    args = [ "/c", "start" ].concat(args)
-    browser = "cmd"
+function getUrlAndOpen (d, cb) {
+  var repo = d.repository || d.repositories
+    , url
+  if (d.bugs) {
+    url = (typeof d.bugs === "string") ? d.bugs : d.bugs.url
   }
-
-  if (!browser) {
-    var er = ["the 'browser' config is not set.  Try doing this:"
-             ,"    npm config set browser google-chrome"
-             ,"or:"
-             ,"    npm config set browser lynx"].join("\n")
-    return cb(er)
+  else if (repo) {
+    if (Array.isArray(repo)) repo = repo.shift()
+    if (repo.hasOwnProperty("url")) repo = repo.url
+    log.verbose("bugs", "repository", repo)
+    if (repo && repo.match(/^(https?:\/\/|git(:\/\/|@))github.com/)) {
+      url = repo.replace(/^git(@|:\/\/)/, "https://")
+                .replace(/^https?:\/\/github.com:/, "https://github.com/")
+                .replace(/\.git$/, "")+"/issues"
+    }
   }
+  if (!url) {
+    url = "https://www.npmjs.org/package/" + d.name
+  }
+  log.silly("bugs", "url", url)
+  opener(url, { command: npm.config.get("browser") }, cb)
+}
 
-  exec(browser, args, process.env, false, function () {})
-  cb()
+function callRegistry (name, cb) {
+  mapToRegistry(name, npm.config, function (er, uri, auth) {
+    if (er) return cb(er)
+
+    npm.registry.get(uri + "/latest", { auth : auth }, function (er, d) {
+      if (er) return cb(er)
+
+      getUrlAndOpen(d, cb)
+    })
+  })
 }

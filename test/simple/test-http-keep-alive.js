@@ -32,9 +32,9 @@ var server = http.createServer(function(req, res) {
 });
 
 var connectCount = 0;
-var name = 'localhost:' + common.PORT;
 var agent = new http.Agent({maxSockets: 1});
 var headers = {'connection': 'keep-alive'};
+var name = agent.getName({ port: common.PORT });
 
 server.listen(common.PORT, function() {
   http.get({
@@ -42,6 +42,7 @@ server.listen(common.PORT, function() {
   }, function(response) {
     assert.equal(agent.sockets[name].length, 1);
     assert.equal(agent.requests[name].length, 2);
+    response.resume();
   });
 
   http.get({
@@ -49,6 +50,7 @@ server.listen(common.PORT, function() {
   }, function(response) {
     assert.equal(agent.sockets[name].length, 1);
     assert.equal(agent.requests[name].length, 1);
+    response.resume();
   });
 
   http.get({
@@ -59,6 +61,7 @@ server.listen(common.PORT, function() {
       assert(!agent.requests.hasOwnProperty(name));
       server.close();
     });
+    response.resume();
   });
 });
 

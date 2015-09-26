@@ -25,9 +25,7 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-// Flags: --allow-natives-syntax --smi-only-arrays --packed-arrays
-
-var has_packed_elements = !%HasFastHoleyElements(Array());
+// Flags: --allow-natives-syntax
 
 function test1() {
   var a = Array(8);
@@ -96,17 +94,14 @@ function test6() {
 function test_with_optimization(f) {
   // Run tests in a loop to make sure that inlined Array() constructor runs out
   // of new space memory and must fall back on runtime impl.
-  for (i = 0; i < 250000; ++i) f();
+  for (i = 0; i < 25000; ++i) f();
   %OptimizeFunctionOnNextCall(f);
-  for (i = 0; i < 250000; ++i) f(); // Make sure GC happens
+  for (i = 0; i < 25000; ++i) f(); // Make sure GC happens
 }
 
-if (has_packed_elements) {
-  test_with_optimization(test1);
-  test_with_optimization(test2);
-  test_with_optimization(test3);
-  test_with_optimization(test4);
-  test_with_optimization(test5);
-  test_with_optimization(test6);
-}
-
+test_with_optimization(test1);
+test_with_optimization(test2);
+test_with_optimization(test3);
+test_with_optimization(test4);
+test_with_optimization(test5);
+test_with_optimization(test6);

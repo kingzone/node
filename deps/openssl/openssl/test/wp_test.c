@@ -1,1 +1,1 @@
-link ../crypto/whrlpool/wp_test.c
+../crypto/whrlpool/wp_test.c

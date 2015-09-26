@@ -25,14 +25,14 @@
 #define UV_LOOP_WATCHER_DEFINE(name, type)                                    \
   int uv_##name##_init(uv_loop_t* loop, uv_##name##_t* handle) {              \
     uv__handle_init(loop, (uv_handle_t*)handle, UV_##type);                   \
-    loop->counters.name##_init++;                                             \
     handle->name##_cb = NULL;                                                 \
     return 0;                                                                 \
   }                                                                           \
                                                                               \
   int uv_##name##_start(uv_##name##_t* handle, uv_##name##_cb cb) {           \
     if (uv__is_active(handle)) return 0;                                      \
-    ngx_queue_insert_head(&handle->loop->name##_handles, &handle->queue);     \
+    if (cb == NULL) return -EINVAL;                                           \
+    QUEUE_INSERT_HEAD(&handle->loop->name##_handles, &handle->queue);         \
     handle->name##_cb = cb;                                                   \
     uv__handle_start(handle);                                                 \
     return 0;                                                                 \
@@ -40,17 +40,17 @@
                                                                               \
   int uv_##name##_stop(uv_##name##_t* handle) {                               \
     if (!uv__is_active(handle)) return 0;                                     \
-    ngx_queue_remove(&handle->queue);                                         \
+    QUEUE_REMOVE(&handle->queue);                                             \
     uv__handle_stop(handle);                                                  \
     return 0;                                                                 \
   }                                                                           \
                                                                               \
   void uv__run_##name(uv_loop_t* loop) {                                      \
     uv_##name##_t* h;                                                         \
-    ngx_queue_t* q;                                                           \
-    ngx_queue_foreach(q, &loop->name##_handles) {                             \
-      h = ngx_queue_data(q, uv_##name##_t, queue);                            \
-      if (h->name##_cb) h->name##_cb(h, 0);                                   \
+    QUEUE* q;                                                                 \
+    QUEUE_FOREACH(q, &loop->name##_handles) {                                 \
+      h = QUEUE_DATA(q, uv_##name##_t, queue);                                \
+      h->name##_cb(h);                                                        \
     }                                                                         \
   }                                                                           \
                                                                               \

@@ -34,7 +34,63 @@ var parseTests = {
     'path': '//some_path'
   },
 
+  'http:\\\\evil-phisher\\foo.html#h\\a\\s\\h': {
+    protocol: 'http:',
+    slashes: true,
+    host: 'evil-phisher',
+    hostname: 'evil-phisher',
+    pathname: '/foo.html',
+    path: '/foo.html',
+    hash: '#h%5Ca%5Cs%5Ch',
+    href: 'http://evil-phisher/foo.html#h%5Ca%5Cs%5Ch'
+  },
+
+  'http:\\\\evil-phisher\\foo.html?json="\\"foo\\""#h\\a\\s\\h': {
+    protocol: 'http:',
+    slashes: true,
+    host: 'evil-phisher',
+    hostname: 'evil-phisher',
+    pathname: '/foo.html',
+    search: '?json=%22%5C%22foo%5C%22%22',
+    query: 'json=%22%5C%22foo%5C%22%22',
+    path: '/foo.html?json=%22%5C%22foo%5C%22%22',
+    hash: '#h%5Ca%5Cs%5Ch',
+    href: 'http://evil-phisher/foo.html?json=%22%5C%22foo%5C%22%22#h%5Ca%5Cs%5Ch'
+  },
+
+  'http:\\\\evil-phisher\\foo.html#h\\a\\s\\h?blarg': {
+    protocol: 'http:',
+    slashes: true,
+    host: 'evil-phisher',
+    hostname: 'evil-phisher',
+    pathname: '/foo.html',
+    path: '/foo.html',
+    hash: '#h%5Ca%5Cs%5Ch?blarg',
+    href: 'http://evil-phisher/foo.html#h%5Ca%5Cs%5Ch?blarg'
+  },
+
+
+  'http:\\\\evil-phisher\\foo.html': {
+    protocol: 'http:',
+    slashes: true,
+    host: 'evil-phisher',
+    hostname: 'evil-phisher',
+    pathname: '/foo.html',
+    path: '/foo.html',
+    href: 'http://evil-phisher/foo.html'
+  },
+
   'HTTP://www.example.com/' : {
+    'href': 'http://www.example.com/',
+    'protocol': 'http:',
+    'slashes': true,
+    'host': 'www.example.com',
+    'hostname': 'www.example.com',
+    'pathname': '/',
+    'path': '/'
+  },
+
+  'HTTP://www.example.com' : {
     'href': 'http://www.example.com/',
     'protocol': 'http:',
     'slashes': true,
@@ -121,32 +177,44 @@ var parseTests = {
     'path': '/Y'
   },
 
+  // + not an invalid host character
+  // per https://url.spec.whatwg.org/#host-parsing
+  'http://x.y.com+a/b/c' : {
+    'href': 'http://x.y.com+a/b/c',
+    'protocol': 'http:',
+    'slashes': true,
+    'host': 'x.y.com+a',
+    'hostname': 'x.y.com+a',
+    'pathname': '/b/c',
+    'path': '/b/c'
+  },
+
   // an unexpected invalid char in the hostname.
-  'HtTp://x.y.cOm*a/b/c?d=e#f g<h>i' : {
-    'href': 'http://x.y.com/*a/b/c?d=e#f%20g%3Ch%3Ei',
+  'HtTp://x.y.cOm;a/b/c?d=e#f g<h>i' : {
+    'href': 'http://x.y.com/;a/b/c?d=e#f%20g%3Ch%3Ei',
     'protocol': 'http:',
     'slashes': true,
     'host': 'x.y.com',
     'hostname': 'x.y.com',
-    'pathname': '/*a/b/c',
+    'pathname': ';a/b/c',
     'search': '?d=e',
     'query': 'd=e',
     'hash': '#f%20g%3Ch%3Ei',
-    'path': '/*a/b/c?d=e'
+    'path': ';a/b/c?d=e'
   },
 
   // make sure that we don't accidentally lcast the path parts.
-  'HtTp://x.y.cOm*A/b/c?d=e#f g<h>i' : {
-    'href': 'http://x.y.com/*A/b/c?d=e#f%20g%3Ch%3Ei',
+  'HtTp://x.y.cOm;A/b/c?d=e#f g<h>i' : {
+    'href': 'http://x.y.com/;A/b/c?d=e#f%20g%3Ch%3Ei',
     'protocol': 'http:',
     'slashes': true,
     'host': 'x.y.com',
     'hostname': 'x.y.com',
-    'pathname': '/*A/b/c',
+    'pathname': ';A/b/c',
     'search': '?d=e',
     'query': 'd=e',
     'hash': '#f%20g%3Ch%3Ei',
-    'path': '/*A/b/c?d=e'
+    'path': ';A/b/c?d=e'
   },
 
   'http://x...y...#p': {
@@ -461,17 +529,17 @@ var parseTests = {
     'path': '/'
   },
 
-  'http://www.Äffchen.cOm*A/b/c?d=e#f g<h>i' : {
-    'href': 'http://www.xn--ffchen-9ta.com/*A/b/c?d=e#f%20g%3Ch%3Ei',
+  'http://www.Äffchen.cOm;A/b/c?d=e#f g<h>i' : {
+    'href': 'http://www.xn--ffchen-9ta.com/;A/b/c?d=e#f%20g%3Ch%3Ei',
     'protocol': 'http:',
     'slashes': true,
     'host': 'www.xn--ffchen-9ta.com',
     'hostname': 'www.xn--ffchen-9ta.com',
-    'pathname': '/*A/b/c',
+    'pathname': ';A/b/c',
     'search': '?d=e',
     'query': 'd=e',
     'hash': '#f%20g%3Ch%3Ei',
-    'path': '/*A/b/c?d=e'
+    'path': ';A/b/c?d=e'
   },
 
   'http://SÉLIER.COM/' : {
@@ -651,13 +719,174 @@ var parseTests = {
     'hash': '#abc',
     'pathname': '/a/b',
     'path': '/a/b?a=b'
+  },
+
+  'http://-lovemonsterz.tumblr.com/rss': {
+    'protocol': 'http:',
+    'slashes': true,
+    'host': '-lovemonsterz.tumblr.com',
+    'hostname': '-lovemonsterz.tumblr.com',
+    'href': 'http://-lovemonsterz.tumblr.com/rss',
+    'pathname': '/rss',
+    'path': '/rss',
+  },
+
+  'http://-lovemonsterz.tumblr.com:80/rss': {
+    'protocol': 'http:',
+    'slashes': true,
+    'port': '80',
+    'host': '-lovemonsterz.tumblr.com:80',
+    'hostname': '-lovemonsterz.tumblr.com',
+    'href': 'http://-lovemonsterz.tumblr.com:80/rss',
+    'pathname': '/rss',
+    'path': '/rss',
+  },
+
+  'http://user:pass@-lovemonsterz.tumblr.com/rss': {
+    'protocol': 'http:',
+    'slashes': true,
+    'auth': 'user:pass',
+    'host': '-lovemonsterz.tumblr.com',
+    'hostname': '-lovemonsterz.tumblr.com',
+    'href': 'http://user:pass@-lovemonsterz.tumblr.com/rss',
+    'pathname': '/rss',
+    'path': '/rss',
+  },
+
+  'http://user:pass@-lovemonsterz.tumblr.com:80/rss': {
+    'protocol': 'http:',
+    'slashes': true,
+    'auth': 'user:pass',
+    'port': '80',
+    'host': '-lovemonsterz.tumblr.com:80',
+    'hostname': '-lovemonsterz.tumblr.com',
+    'href': 'http://user:pass@-lovemonsterz.tumblr.com:80/rss',
+    'pathname': '/rss',
+    'path': '/rss',
+  },
+
+  'http://_jabber._tcp.google.com/test': {
+    'protocol': 'http:',
+    'slashes': true,
+    'host': '_jabber._tcp.google.com',
+    'hostname': '_jabber._tcp.google.com',
+    'href': 'http://_jabber._tcp.google.com/test',
+    'pathname': '/test',
+    'path': '/test',
+  },
+
+  'http://user:pass@_jabber._tcp.google.com/test': {
+    'protocol': 'http:',
+    'slashes': true,
+    'auth': 'user:pass',
+    'host': '_jabber._tcp.google.com',
+    'hostname': '_jabber._tcp.google.com',
+    'href': 'http://user:pass@_jabber._tcp.google.com/test',
+    'pathname': '/test',
+    'path': '/test',
+  },
+
+  'http://_jabber._tcp.google.com:80/test': {
+    'protocol': 'http:',
+    'slashes': true,
+    'port': '80',
+    'host': '_jabber._tcp.google.com:80',
+    'hostname': '_jabber._tcp.google.com',
+    'href': 'http://_jabber._tcp.google.com:80/test',
+    'pathname': '/test',
+    'path': '/test',
+  },
+
+  'http://user:pass@_jabber._tcp.google.com:80/test': {
+    'protocol': 'http:',
+    'slashes': true,
+    'auth': 'user:pass',
+    'port': '80',
+    'host': '_jabber._tcp.google.com:80',
+    'hostname': '_jabber._tcp.google.com',
+    'href': 'http://user:pass@_jabber._tcp.google.com:80/test',
+    'pathname': '/test',
+    'path': '/test',
+  },
+
+  'http://x:1/\' <>"`/{}|\\^~`/': {
+    protocol: 'http:',
+    slashes: true,
+    host: 'x:1',
+    port: '1',
+    hostname: 'x',
+    pathname: '/%27%20%3C%3E%22%60/%7B%7D%7C/%5E~%60/',
+    path: '/%27%20%3C%3E%22%60/%7B%7D%7C/%5E~%60/',
+    href: 'http://x:1/%27%20%3C%3E%22%60/%7B%7D%7C/%5E~%60/'
+  },
+
+  'http://a@b@c/': {
+    protocol: 'http:',
+    slashes: true,
+    auth: 'a@b',
+    host: 'c',
+    hostname: 'c',
+    href: 'http://a%40b@c/',
+    path: '/',
+    pathname: '/'
+  },
+
+  'http://a@b?@c': {
+    protocol: 'http:',
+    slashes: true,
+    auth: 'a',
+    host: 'b',
+    hostname: 'b',
+    href: 'http://a@b/?@c',
+    path: '/?@c',
+    pathname: '/',
+    search: '?@c',
+    query: '@c'
+  },
+
+  'http://a\r" \t\n<\'b:b@c\r\nd/e?f':{
+    protocol: 'http:',
+    slashes: true,
+    auth: 'a\r" \t\n<\'b:b',
+    host: 'c',
+    port: null,
+    hostname: 'c',
+    hash: null,
+    search: '?f',
+    query: 'f',
+    pathname: '%0D%0Ad/e',
+    path: '%0D%0Ad/e?f',
+    href: 'http://a%0D%22%20%09%0A%3C\'b:b@c/%0D%0Ad/e?f'
+  },
+
+  // git urls used by npm
+  'git+ssh://git@github.com:npm/npm': {
+    protocol: 'git+ssh:',
+    slashes: true,
+    auth: 'git',
+    host: 'github.com',
+    port: null,
+    hostname: 'github.com',
+    hash: null,
+    search: null,
+    query: null,
+    pathname: '/:npm/npm',
+    path: '/:npm/npm',
+    href: 'git+ssh://git@github.com/:npm/npm'
   }
+
 };
 
 for (var u in parseTests) {
   var actual = url.parse(u),
       spaced = url.parse('     \t  ' + u + '\n\t');
       expected = parseTests[u];
+
+  Object.keys(actual).forEach(function (i) {
+    if (expected[i] === undefined && actual[i] === null) {
+      expected[i] = null;
+    }
+  });
 
   assert.deepEqual(actual, expected);
   assert.deepEqual(spaced, expected);
@@ -690,11 +919,44 @@ var parseTestsWithQueryString = {
     'search': '',
     'pathname': '/',
     'path': '/'
+  },
+  '/example': {
+    protocol: null,
+    slashes: null,
+    auth: null,
+    host: null,
+    port: null,
+    hostname: null,
+    hash: null,
+    search: '',
+    query: {},
+    pathname: '/example',
+    path: '/example',
+    href: '/example'
+  },
+  '/example?query=value':{
+    protocol: null,
+    slashes: null,
+    auth: null,
+    host: null,
+    port: null,
+    hostname: null,
+    hash: null,
+    search: '?query=value',
+    query: { query: 'value' },
+    pathname: '/example',
+    path: '/example?query=value',
+    href: '/example?query=value'
   }
 };
 for (var u in parseTestsWithQueryString) {
   var actual = url.parse(u, true);
   var expected = parseTestsWithQueryString[u];
+  for (var i in actual) {
+    if (actual[i] === null && expected[i] === undefined) {
+      expected[i] = null;
+    }
+  }
 
   assert.deepEqual(actual, expected);
 }
@@ -843,6 +1105,50 @@ var formatTests = {
     'protocol': 'coap',
     'host': '[fedc:ba98:7654:3210:fedc:ba98:7654:3210]:61616',
     'pathname': '/s/stopButton'
+  },
+
+  // encode context-specific delimiters in path and query, but do not touch
+  // other non-delimiter chars like `%`.
+  // <https://github.com/joyent/node/issues/4082>
+
+  // `#`,`?` in path
+  '/path/to/%%23%3F+=&.txt?foo=theA1#bar' : {
+    href : '/path/to/%%23%3F+=&.txt?foo=theA1#bar',
+    pathname: '/path/to/%#?+=&.txt',
+    query: {
+      foo: 'theA1'
+    },
+    hash: "#bar"
+  },
+
+  // `#`,`?` in path + `#` in query
+  '/path/to/%%23%3F+=&.txt?foo=the%231#bar' : {
+    href : '/path/to/%%23%3F+=&.txt?foo=the%231#bar',
+    pathname: '/path/to/%#?+=&.txt',
+    query: {
+      foo: 'the#1'
+    },
+    hash: "#bar"
+  },
+
+  // `?` and `#` in path and search
+  'http://ex.com/foo%3F100%m%23r?abc=the%231?&foo=bar#frag': {
+    href: 'http://ex.com/foo%3F100%m%23r?abc=the%231?&foo=bar#frag',
+    protocol: 'http:',
+    hostname: 'ex.com',
+    hash: '#frag',
+    search: '?abc=the#1?&foo=bar',
+    pathname: '/foo?100%m#r',
+  },
+
+  // `?` and `#` in search only
+  'http://ex.com/fooA100%mBr?abc=the%231?&foo=bar#frag': {
+    href: 'http://ex.com/fooA100%mBr?abc=the%231?&foo=bar#frag',
+    protocol: 'http:',
+    hostname: 'ex.com',
+    hash: '#frag',
+    search: '?abc=the#1?&foo=bar',
+    pathname: '/fooA100%mBr',
   }
 };
 for (var u in formatTests) {
@@ -872,6 +1178,14 @@ var relativeTests = [
   ['/foo/bar/baz/', 'quux/baz', '/foo/bar/baz/quux/baz'],
   ['/foo/bar/baz', '../../../../../../../../quux/baz', '/quux/baz'],
   ['/foo/bar/baz', '../../../../../../../quux/baz', '/quux/baz'],
+  ['/foo', '.', '/'],
+  ['/foo', '..', '/'],
+  ['/foo/', '.', '/foo/'],
+  ['/foo/', '..', '/'],
+  ['/foo/bar', '.', '/foo/'],
+  ['/foo/bar', '..', '/'],
+  ['/foo/bar/', '.', '/foo/bar/'],
+  ['/foo/bar/', '..', '/foo/'],
   ['foo/bar', '../../../baz', '../../baz'],
   ['foo/bar/', '../../../baz', '../baz'],
   ['http://example.com/b//c//d;p?q#blarg', 'https:#hash2', 'https:///#hash2'],
@@ -1227,15 +1541,6 @@ relativeTests.forEach(function(relativeTest) {
   var actual = url.resolveObject(url.parse(relativeTest[0]), relativeTest[1]),
       expected = url.parse(relativeTest[2]);
 
-  //because of evaluation order
-  //resolveObject(parse(x), y) == parse(resolve(x, y)) will differ by
-  //false-ish values.  remove all except host and hostname
-  for (var i in actual) {
-    if (actual[i] === undefined ||
-        (!emptyIsImportant.hasOwnProperty(i) && !actual[i])) {
-      delete actual[i];
-    }
-  }
 
   assert.deepEqual(actual, expected);
 
@@ -1247,13 +1552,13 @@ relativeTests.forEach(function(relativeTest) {
 });
 
 //format: [to, from, result]
-// the test: ['.//g', 'f:/a', 'f://g'] is a fundimental problem
+// the test: ['.//g', 'f:/a', 'f://g'] is a fundamental problem
 // url.parse('f:/a') does not have a host
-// url.resolve('f:/a', './/g') does not have a host becuase you have moved
+// url.resolve('f:/a', './/g') does not have a host because you have moved
 // down to the g directory.  i.e. f:     //g, however when this url is parsed
 // f:// will indicate that the host is g which is not the case.
 // it is unclear to me how to keep this information from being lost
-// it may be that a pathname of ////g should colapse to /g but this seems
+// it may be that a pathname of ////g should collapse to /g but this seems
 // to be a lot of work for an edge case.  Right now I remove the test
 if (relativeTests2[181][0] === './/g' &&
     relativeTests2[181][1] === 'f:/a' &&
@@ -1263,16 +1568,6 @@ if (relativeTests2[181][0] === './/g' &&
 relativeTests2.forEach(function(relativeTest) {
   var actual = url.resolveObject(url.parse(relativeTest[1]), relativeTest[0]),
       expected = url.parse(relativeTest[2]);
-
-  //because of evaluation order
-  //resolveObject(parse(x), y) == parse(resolve(x, y)) will differ by
-  //false-ish values.  remove all except host and hostname
-  for (var i in actual) {
-    if (actual[i] === undefined ||
-        (!emptyIsImportant.hasOwnProperty(i) && !actual[i])) {
-      delete actual[i];
-    }
-  }
 
   assert.deepEqual(actual, expected);
 

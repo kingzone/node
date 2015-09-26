@@ -33,10 +33,11 @@ var httpsOptions = {
 };
 
 var testURL = url.parse('https://localhost:' + common.PORT);
+testURL.rejectUnauthorized = false;
 
 function check(request) {
   // assert that I'm https
-  assert.ok(request.socket.encrypted);
+  assert.ok(request.socket._secureEstablished);
 }
 
 var server = https.createServer(httpsOptions, function(request, response) {

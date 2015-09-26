@@ -1,6 +1,6 @@
-npm(1) -- node package manager
+npm(1) -- a JavaScript package manager
 ==============================
-
+[![Build Status](https://img.shields.io/travis/npm/npm/master.svg)](https://travis-ci.org/npm/npm)
 ## SYNOPSIS
 
 This is just enough info to get you up and running.
@@ -9,22 +9,22 @@ Much more info available via `npm help` once it's installed.
 
 ## IMPORTANT
 
-**You need node v0.6 or higher to run this program.**
+**You need node v0.8 or higher to run this program.**
 
 To install an old **and unsupported** version of npm that works on node 0.3
 and prior, clone the git repo and dig through the old tags and branches.
 
 ## Super Easy Install
 
-npm comes with node now.
+npm comes with [node](http://nodejs.org/download/) now.
 
 ### Windows Computers
 
-Get the MSI.  npm is in it.
+[Get the MSI](http://nodejs.org/download/).  npm is in it.
 
 ### Apple Macintosh Computers
 
-Get the pkg.  npm is in it.
+[Get the pkg](http://nodejs.org/download/).  npm is in it.
 
 ### Other Sorts of Unices
 
@@ -35,31 +35,28 @@ paths, etc.) then read on.
 
 ## Fancy Install (Unix)
 
-To install npm with one command, do this:
+There's a pretty robust install script at
+<https://www.npmjs.com/install.sh>.  You can download that and run it.
 
-    curl http://npmjs.org/install.sh | sh
+Here's an example using curl:
 
-To skip the npm 0.x cleanup, do this:
-
-    curl http://npmjs.org/install.sh | clean=no sh
-
-To say "yes" to the 0.x cleanup, but skip the prompt:
-
-    curl http://npmjs.org/install.sh | clean=yes sh
-
-If you get permission errors, you'll need to **run** the script as root.
-(Note, just putting `sudo` in front of the `curl` will **fetch** the script
-as root.)
+```sh
+curl -L https://www.npmjs.com/install.sh | sh
+```
 
 ### Slightly Fancier
 
 You can set any npm configuration params with that script:
 
-    curl http://npmjs.org/install.sh | npm_config_prefix=/some/path sh
+```sh
+npm_config_prefix=/some/path sh install.sh
+```
 
 Or, you can run it in uber-debuggery mode:
 
-    curl http://npmjs.org/install.sh | npm_debug=1 sh
+```sh
+npm_debug=1 sh install.sh
+```
 
 ### Even Fancier
 
@@ -71,10 +68,15 @@ arbitrary config keys using the `./configure --key=val ...`, and then
 run npm commands by doing `node cli.js <cmd> <args>`.  (This is helpful
 for testing, or running stuff without actually installing npm itself.)
 
-## Fancy Windows Install
+## Windows Install or Upgrade
 
-You can download a zip file from <http://npmjs.org/dist/>, and unpack it
-in the same folder where node.exe lives.
+You can download a zip file from <https://github.com/npm/npm/releases>, and
+unpack it in the `node_modules\npm\` folder inside node's installation folder.
+
+To upgrade to npm 2, follow the Windows upgrade instructions in
+the npm Troubleshooting Guide:
+
+<https://github.com/npm/npm/wiki/Troubleshooting#upgrading-on-windows>
 
 If that's not fancy enough for you, then you can fetch the code with
 git, and mess with it directly.
@@ -83,55 +85,18 @@ git, and mess with it directly.
 
 No.
 
-## Dev Install
-
-To install the latest **unstable** development version from git:
-
-    git clone https://github.com/isaacs/npm.git
-    cd npm
-    sudo make install     # (or: `node cli.js install -gf`)
-
-If you're sitting in the code folder reading this document in your
-terminal, then you've already got the code.  Just do:
-
-    sudo make install
-
-and npm will install itself.
-
-## Permissions when Using npm to Install Other Stuff
-
-**tl;dr**
-
-* Use `sudo` for greater safety.  Or don't, if you prefer not to.
-* npm will downgrade permissions if it's root before running any build
-  scripts that package authors specified.
-
-### More details...
-
-As of version 0.3, it is recommended to run npm as root.
-This allows npm to change the user identifier to the `nobody` user prior
-to running any package build or test commands.
-
-If you are not the root user, or if you are on a platform that does not
-support uid switching, then npm will not attempt to change the userid.
-
-If you would like to ensure that npm **always** runs scripts as the
-"nobody" user, and have it fail if it cannot downgrade permissions, then
-set the following configuration param:
-
-    npm config set unsafe-perm false
-
-This will prevent running in unsafe mode, even as non-root users.
-
 ## Uninstalling
 
 So sad to see you go.
 
-    sudo npm uninstall npm -g
-
+```sh
+sudo npm uninstall npm -g
+```
 Or, if that fails,
 
-    sudo make uninstall
+```sh
+sudo make uninstall
+```
 
 ## More Severe Uninstalling
 
@@ -145,13 +110,17 @@ remove them.
 To remove cruft left behind by npm 0.x, you can use the included
 `clean-old.sh` script file.  You can run it conveniently like this:
 
-    npm explore npm -g -- sh scripts/clean-old.sh
+```sh
+npm explore npm -g -- sh scripts/clean-old.sh
+```
 
 npm uses two configuration files, one for per-user configs, and another
 for global (every-user) configs.  You can view them by doing:
 
-    npm config get userconfig   # defaults to ~/.npmrc
-    npm config get globalconfig # defaults to /usr/local/etc/npmrc
+```sh
+npm config get userconfig   # defaults to ~/.npmrc
+npm config get globalconfig # defaults to /usr/local/etc/npmrc
+```
 
 Uninstalling npm does not remove configuration files by default.  You
 must remove them yourself manually if you want them gone.  Note that
@@ -160,18 +129,35 @@ you have chosen.
 
 ## Using npm Programmatically
 
-If you would like to use npm programmatically, you can do that.
-It's not very well documented, but it *is* rather simple.
+Although npm can be used programmatically, its API is meant for use by the CLI
+*only*, and no guarantees are made regarding its fitness for any other purpose.
+If you want to use npm to reliably perform some task, the safest thing to do is
+to invoke the desired `npm` command with appropriate arguments.
 
-    var npm = require("npm")
-    npm.load(myConfigObject, function (er) {
-      if (er) return handlError(er)
-      npm.commands.install(["some", "args"], function (er, data) {
-        if (er) return commandFailed(er)
-        // command succeeded, and data might have some info
-      })
-      npm.on("log", function (message) { .... })
-    })
+The semantic version of npm refers to the CLI itself, rather than the
+underlying API. _The internal API is not guaranteed to remain stable even when
+npm's version indicates no breaking changes have been made according to
+semver._
+
+If you _still_ would like to use npm programmatically, it's _possible_. The API
+isn't very well documented, but it _is_ rather simple.
+
+Eventually, npm will be just a thin CLI wrapper around the modules that it
+depends on, but for now, there are some things that only the CLI can do. You
+should try using one of npm's dependencies first, and only use the API if what
+you're trying to do is only supported by npm itself.
+
+```javascript
+var npm = require("npm")
+npm.load(myConfigObject, function (er) {
+  if (er) return handlError(er)
+  npm.commands.install(["some", "args"], function (er, data) {
+    if (er) return commandFailed(er)
+    // command succeeded, and data might have some info
+  })
+  npm.registry.log.on("log", function (message) { .... })
+})
+```
 
 The `load` function takes an object hash of the command-line configs.
 The various `npm.commands.<cmd>` functions take an **array** of
@@ -189,62 +175,61 @@ help config` to learn about all the options you can set there.
 
 ## More Docs
 
-Check out the [docs](http://npmjs.org/doc/),
-especially the [faq](http://npmjs.org/doc/faq.html).
+Check out the [docs](https://docs.npmjs.com/),
+especially the [faq](https://docs.npmjs.com/misc/faq).
 
 You can use the `npm help` command to read any of them.
 
 If you're a developer, and you want to use npm to publish your program,
-you should
-[read this](http://npmjs.org/doc/developers.html)
+you should [read this](https://docs.npmjs.com/misc/developers)
 
 ## Legal Stuff
 
-"npm" and "the npm registry" are owned by Isaac Z. Schlueter.  All
-rights not explicitly granted in the MIT license are reserved. See the
-included LICENSE file for more details.
+"npm" and "The npm Registry" are owned by npm, Inc.
+All rights reserved.  See the included LICENSE file for more details.
 
-"Node.js" and "node" are trademarks owned by Joyent, Inc.  npm is not
-officially part of the Node.js project, and is neither owned by nor
-officially affiliated with Joyent, Inc.
+"Node.js" and "node" are trademarks owned by Joyent, Inc.
 
-The packages in the npm registry are not part of npm itself, and are the
-sole property of their respective maintainers.  While every effort is
-made to ensure accountability, there is absolutely no guarantee,
-warrantee, or assertion made as to the quality, fitness for a specific
-purpose, or lack of malice in any given npm package.  Modules
-published on the npm registry are not affiliated with or endorsed by
-Joyent, Inc., Isaac Z. Schlueter, Ryan Dahl, or the Node.js project.
+Modules published on the npm registry are not officially endorsed by
+npm, Inc. or the Node.js project.
 
-If you have a complaint about a package in the npm registry, and cannot
-resolve it with the package owner, please express your concerns to
-Isaac Z. Schlueter at <i@izs.me>.
+Data published to the npm registry is not part of npm itself, and is
+the sole property of the publisher.  While every effort is made to
+ensure accountability, there is absolutely no guarantee, warranty, or
+assertion expressed or implied as to the quality, fitness for a
+specific purpose, or lack of malice in any given npm package.
 
-### In plain english
+If you have a complaint about a package in the public npm registry,
+and cannot [resolve it with the package
+owner](https://docs.npmjs.com/misc/disputes), please email
+<support@npmjs.com> and explain the situation.
 
-This is mine; not my employer's, not Node's, not Joyent's, not Ryan
-Dahl's.
+Any data published to The npm Registry (including user account
+information) may be removed or modified at the sole discretion of the
+npm server administrators.
+
+### In plainer english
+
+npm is the property of npm, Inc.
 
 If you publish something, it's yours, and you are solely accountable
-for it.  Not me, not Node, not Joyent, not Ryan Dahl.
+for it.
 
-If other people publish something, it's theirs.  Not mine, not Node's,
-not Joyent's, not Ryan Dahl's.
+If other people publish something, it's theirs.
 
-Yes, you can publish something evil.  It will be removed promptly if
-reported, and we'll lose respect for you.  But there is no vetting
-process for published modules.
+Users can publish Bad Stuff.  It will be removed promptly if reported.
+But there is no vetting process for published modules, and you use
+them at your own risk.  Please inspect the source.
 
-If this concerns you, inspect the source before using packages.
+If you publish Bad Stuff, we may delete it from the registry, or even
+ban your account in extreme cases.  So don't do that.
 
 ## BUGS
 
 When you find issues, please report them:
 
 * web:
-  <http://github.com/isaacs/npm/issues>
-* email:
-  <npm-@googlegroups.com>
+  <https://github.com/npm/npm/issues>
 
 Be sure to include *all* of the output from the npm command that didn't work
 as expected.  The `npm-debug.log` file is also helpful to provide.
@@ -255,6 +240,6 @@ will no doubt tell you to put the output in a gist or email.
 ## SEE ALSO
 
 * npm(1)
-* npm-faq(1)
+* npm-faq(7)
 * npm-help(1)
-* npm-index(1)
+* npm-index(7)

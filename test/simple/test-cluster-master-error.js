@@ -62,7 +62,8 @@ if (cluster.isWorker) {
 
       // throw accidently error
       process.nextTick(function() {
-        throw 'accidently error';
+        console.error('about to throw');
+        throw new Error('accidently error');
       });
     }
 
@@ -110,10 +111,10 @@ if (cluster.isWorker) {
   master.on('exit', function(code) {
 
     // Check that the cluster died accidently
-    existMaster = (code === 1);
+    existMaster = !!code;
 
     // Give the workers time to shut down
-    setTimeout(checkWorkers, 200);
+    setTimeout(checkWorkers, 1000);
 
     function checkWorkers() {
       // When master is dead all workers should be dead to

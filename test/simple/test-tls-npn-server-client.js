@@ -42,6 +42,13 @@ var serverOptions = {
   key: loadPEM('agent2-key'),
   cert: loadPEM('agent2-cert'),
   crl: loadPEM('ca2-crl'),
+  SNICallback: function(servername, cb) {
+    cb(null, tls.createSecureContext({
+      key: loadPEM('agent2-key'),
+      cert: loadPEM('agent2-cert'),
+      crl: loadPEM('ca2-crl'),
+    }));
+  },
   NPNProtocols: ['a', 'b', 'c']
 };
 
@@ -52,19 +59,28 @@ var clientsOptions = [{
   key: serverOptions.key,
   cert: serverOptions.cert,
   crl: serverOptions.crl,
-  NPNProtocols: ['a', 'b', 'c']
+  NPNProtocols: ['a', 'b', 'c'],
+  rejectUnauthorized: false
 },{
   port: serverPort,
   key: serverOptions.key,
   cert: serverOptions.cert,
   crl: serverOptions.crl,
-  NPNProtocols: ['c', 'b', 'e']
+  NPNProtocols: ['c', 'b', 'e'],
+  rejectUnauthorized: false
 },{
   port: serverPort,
   key: serverOptions.key,
   cert: serverOptions.cert,
   crl: serverOptions.crl,
-  NPNProtocols: ['first-priority-unsupported', 'x', 'y']
+  rejectUnauthorized: false
+},{
+  port: serverPort,
+  key: serverOptions.key,
+  cert: serverOptions.cert,
+  crl: serverOptions.crl,
+  NPNProtocols: ['first-priority-unsupported', 'x', 'y'],
+  rejectUnauthorized: false
 }];
 
 var serverResults = [],
@@ -88,7 +104,9 @@ function startTest() {
   connectClient(clientsOptions[0], function() {
     connectClient(clientsOptions[1], function() {
       connectClient(clientsOptions[2], function() {
-        server.close();
+        connectClient(clientsOptions[3], function() {
+          server.close();
+        });
       });
     });
   });
@@ -97,6 +115,8 @@ function startTest() {
 process.on('exit', function() {
   assert.equal(serverResults[0], clientsResults[0]);
   assert.equal(serverResults[1], clientsResults[1]);
-  assert.equal(serverResults[2], 'first-priority-unsupported');
+  assert.equal(serverResults[2], 'http/1.1');
   assert.equal(clientsResults[2], false);
+  assert.equal(serverResults[3], 'first-priority-unsupported');
+  assert.equal(clientsResults[3], false);
 });

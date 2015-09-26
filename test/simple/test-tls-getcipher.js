@@ -43,9 +43,13 @@ var server = tls.createServer(options, function(cleartextStream) {
 });
 
 server.listen(common.PORT, '127.0.0.1', function() {
-  var client = tls.connect(common.PORT, '127.0.0.1',  function() {
+  var client = tls.connect({
+    host: '127.0.0.1',
+    port: common.PORT,
+    rejectUnauthorized: false
+  }, function() {
     var cipher = client.getCipher();
-    assert.equal(cipher.name, cipher_list[0]);
+    assert.equal(cipher.name, cipher_list[1]);
     assert(cipher_version_pattern.test(cipher.version));
     client.end();
     server.close();
